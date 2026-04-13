@@ -4,7 +4,8 @@ import {
   normalizeAddress,
   getProfile,
   putProfile,
-  revalidateFromIndexer,
+  revalidateWithRetry,
+  verifyProfileOnChain,
 } from "../lib/profileStore";
 
 export interface UserProfile {
@@ -16,9 +17,21 @@ export interface UserProfile {
   collectionId: string;
 }
 
+/**
+ * Lookup phases — lets the UI show progressive feedback
+ * instead of a binary loading/error state.
+ */
+export type LookupPhase =
+  | "idle"        // No lookup in progress
+  | "cache"       // Checking localStorage (instant)
+  | "indexer"     // Querying indexer with retries
+  | "chain"       // Direct fullnode verification
+  | "done";       // All phases complete
+
 interface AuthContextType {
   profile: UserProfile | null;
   loading: boolean;
+  lookupPhase: LookupPhase;
   setProfile: (profile: UserProfile | null) => void;
   refreshProfile: () => Promise<void>;
   logout: () => void;
@@ -33,6 +46,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { connected, account, disconnect } = useWallet();
   const [profile, setProfileState] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lookupPhase, setLookupPhase] = useState<LookupPhase>("idle");
 
   // Derive a stable address string to prevent useEffect re-triggers
   // from wallet adapter object reference changes
@@ -57,54 +71,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (normalizedWallet) {
       let cancelled = false;
 
-      // ——— INSTANT: Read from ProfileStore (0ms, no network) ———
+      // ——— PHASE 1: localStorage (0ms, instant) ———
+      setLookupPhase("cache");
       const cached = getProfile(normalizedWallet);
       if (cached) {
         setProfileState(cached);
         setLoading(false);
-      } else {
-        setLoading(true);
-      }
+        setLookupPhase("done");
 
-      // ——— BACKGROUND: Revalidate from indexer (non-blocking) ———
-      // Enriches the local store with latest collectionId and data.
-      // If the user exists on-chain but not locally, this populates them.
-      revalidateFromIndexer(normalizedWallet)
-        .then(result => {
-          if (!cancelled) {
-            if (result) {
-              setProfileState(result);
-            } else if (!cached) {
-              // No local data AND no indexer result → truly no profile
-              setProfileState(null);
-            }
-            // If cached exists but indexer returned null:
-            // keep the cached profile — indexer may be lagging.
-            setLoading(false);
-          }
-        })
-        .catch(err => {
-          if (!cancelled) {
-            console.error(err);
-            if (!cached) {
-              setProfileState(null);
-            }
-            setLoading(false);
+        // Still revalidate in background to keep data fresh,
+        // but user is already authenticated.
+        revalidateWithRetry(normalizedWallet).then(result => {
+          if (!cancelled && result) {
+            setProfileState(result);
           }
         });
+
+        return () => { cancelled = true; };
+      }
+
+      // ——— No cache — run full multi-phase lookup ———
+      setLoading(true);
+
+      (async () => {
+        // PHASE 2: Indexer with retry (2s/4s/8s backoff)
+        if (cancelled) return;
+        setLookupPhase("indexer");
+        const indexerResult = await revalidateWithRetry(normalizedWallet, 3);
+
+        if (cancelled) return;
+        if (indexerResult) {
+          setProfileState(indexerResult);
+          setLoading(false);
+          setLookupPhase("done");
+          return;
+        }
+
+        // PHASE 3: Direct fullnode verification (authoritative)
+        setLookupPhase("chain");
+        const chainResult = await verifyProfileOnChain(normalizedWallet);
+
+        if (cancelled) return;
+        if (chainResult) {
+          setProfileState(chainResult);
+          setLoading(false);
+          setLookupPhase("done");
+          return;
+        }
+
+        // All 3 layers failed — profile genuinely does not exist
+        setProfileState(null);
+        setLoading(false);
+        setLookupPhase("done");
+      })().catch(err => {
+        if (!cancelled) {
+          console.error("AuthContext: multi-phase lookup failed", err);
+          setProfileState(null);
+          setLoading(false);
+          setLookupPhase("done");
+        }
+      });
 
       return () => { cancelled = true; };
     } else if (!connected) {
       setProfileState(null);
       setLoading(false);
+      setLookupPhase("idle");
     }
   }, [normalizedWallet, connected]);
 
   const refreshProfile = async () => {
     if (normalizedWallet) {
       setLoading(true);
+      setLookupPhase("indexer");
       try {
-        const result = await revalidateFromIndexer(normalizedWallet);
+        const result = await revalidateWithRetry(normalizedWallet, 2);
         if (result) {
           setProfileState(result);
         }
@@ -112,6 +153,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.error(err);
       } finally {
         setLoading(false);
+        setLookupPhase("done");
       }
     }
   };
@@ -121,10 +163,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // The store ensures instant recognition on re-login.
     disconnect();
     setProfileState(null);
+    setLookupPhase("idle");
   };
 
   return (
-    <AuthContext.Provider value={{ profile, loading, setProfile, refreshProfile, logout }}>
+    <AuthContext.Provider value={{ profile, loading, lookupPhase, setProfile, refreshProfile, logout }}>
       {children}
     </AuthContext.Provider>
   );

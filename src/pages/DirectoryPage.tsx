@@ -13,6 +13,7 @@ export default function DirectoryPage() {
   const [searchAddress, setSearchAddress] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [searchPhase, setSearchPhase] = useState<string>("");
   const navigate = useNavigate();
   // Track the current search request to discard stale responses
   const searchIdRef = useRef(0);
@@ -44,43 +45,68 @@ export default function DirectoryPage() {
     setSearchError("");
     const mySearchId = ++searchIdRef.current;
 
-    // If the background sync hasn't finished yet, wait for it
-    if (!syncDoneRef.current) {
-      try {
-        await syncAllFromIndexer();
-        syncDoneRef.current = true;
-      } catch {
-        // Non-fatal — we'll search whatever we have locally
+    // ——— Multi-attempt search with sync retries ———
+    // On a fresh browser the local store is empty. We need to sync
+    // from the indexer first, and retry if the first sync misses data.
+    const MAX_SYNC_ATTEMPTS = 3;
+    const SYNC_RETRY_DELAY = 2000; // ms
+
+    for (let attempt = 1; attempt <= MAX_SYNC_ATTEMPTS; attempt++) {
+      // Discard if a newer search has started
+      if (searchIdRef.current !== mySearchId) return;
+
+      setSearchPhase(
+        attempt === 1
+          ? "SYNCING DIRECTORY..."
+          : `RETRYING (${attempt}/${MAX_SYNC_ATTEMPTS})...`
+      );
+
+      // Sync from the indexer (first attempt uses existing sync if done)
+      if (!syncDoneRef.current || attempt > 1) {
+        try {
+          await syncAllFromIndexer();
+          syncDoneRef.current = true;
+        } catch {
+          // Non-fatal — search whatever we have locally
+        }
+      }
+
+      // Discard if a newer search has started
+      if (searchIdRef.current !== mySearchId) return;
+
+      // Search locally
+      const results = searchProfiles(term);
+
+      // Exact username match takes priority
+      const exactMatch = results.find(
+        (p) => p.username?.toLowerCase() === term.toLowerCase()
+      );
+
+      if (exactMatch) {
+        navigate(`/directory/${exactMatch.walletAddress}`);
+        setIsSearching(false);
+        setSearchPhase("");
+        return;
+      }
+
+      // Partial match — use the first result
+      if (results.length > 0) {
+        navigate(`/directory/${results[0].walletAddress}`);
+        setIsSearching(false);
+        setSearchPhase("");
+        return;
+      }
+
+      // No results yet — wait before retrying (unless last attempt)
+      if (attempt < MAX_SYNC_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, SYNC_RETRY_DELAY));
       }
     }
 
-    // Discard if a newer search has started
-    if (searchIdRef.current !== mySearchId) return;
-
-    // ——— Instant local search ———
-    const results = searchProfiles(term);
-
-    // Exact username match takes priority
-    const exactMatch = results.find(
-      (p) => p.username?.toLowerCase() === term.toLowerCase()
-    );
-
-    if (exactMatch) {
-      navigate(`/directory/${exactMatch.walletAddress}`);
-      setIsSearching(false);
-      return;
-    }
-
-    // Partial match — use the first result
-    if (results.length > 0) {
-      navigate(`/directory/${results[0].walletAddress}`);
-      setIsSearching(false);
-      return;
-    }
-
-    // No results
+    // All attempts exhausted — no results
     setSearchError("User not found. Try searching by wallet address (0x...) for best results.");
     setIsSearching(false);
+    setSearchPhase("");
   };
 
   return (
@@ -121,6 +147,12 @@ export default function DirectoryPage() {
                 {isSearching ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
               </Button>
             </div>
+            {isSearching && searchPhase && (
+              <div className="text-orange-400 text-xs font-bold tracking-widest mt-2 px-2 flex items-center gap-2">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {searchPhase}
+              </div>
+            )}
             {searchError && (
               <div className="text-red-500 text-xs font-bold tracking-widest mt-2 px-2">
                 {searchError}

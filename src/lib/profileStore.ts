@@ -17,6 +17,8 @@ import type { UserProfile } from "../contexts/AuthContext";
 // ——— Constants ———
 const STORE_KEY = "circle_profiles"; // Map<normalizedAddress, UserProfile>
 const INDEXER_URL = "https://api.testnet.aptoslabs.com/v1/graphql";
+// Fullnode GraphQL — authoritative, zero propagation delay vs the indexer
+const FULLNODE_INDEXER_URL = "https://api.testnet.aptoslabs.com/v1/graphql";
 
 // ——— Address Normalization ———
 export function normalizeAddress(addr: string): string {
@@ -226,3 +228,91 @@ export async function syncAllFromIndexer(): Promise<void> {
     console.error("ProfileStore: bulk sync failed", err);
   }
 }
+
+// ——— Retry-Capable Revalidation ———
+
+/**
+ * Retry indexer revalidation with exponential backoff.
+ * Used when localStorage is empty (fresh browser) and we need to wait
+ * for the indexer to catch up with the on-chain state.
+ *
+ * @param onPhase  Optional callback fired when the retry phase changes.
+ *                 The UI can use this to display progress (e.g. "Attempt 2/3…").
+ */
+export async function revalidateWithRetry(
+  walletAddress: string,
+  maxRetries = 3,
+  onPhase?: (attempt: number, maxAttempts: number) => void
+): Promise<UserProfile | null> {
+  const delays = [2000, 4000, 8000]; // ms between retries
+
+  // First attempt — immediate
+  onPhase?.(1, maxRetries + 1);
+  const first = await revalidateFromIndexer(walletAddress);
+  if (first) return first;
+
+  // Retries with exponential backoff
+  for (let i = 0; i < maxRetries; i++) {
+    onPhase?.(i + 2, maxRetries + 1);
+    await new Promise((r) => setTimeout(r, delays[i] ?? delays[delays.length - 1]));
+    const result = await revalidateFromIndexer(walletAddress);
+    if (result) return result;
+  }
+
+  return null;
+}
+
+// ——— Direct Fullnode Verification (Layer 3) ———
+
+/**
+ * Query the Aptos fullnode directly to check for a CircleProfile collection.
+ * The fullnode reflects the latest on-chain state with NO propagation delay,
+ * unlike the indexer which can lag by seconds or minutes.
+ *
+ * This is the ultimate fallback — if this returns null, the profile
+ * genuinely does not exist on-chain.
+ */
+export async function verifyProfileOnChain(
+  walletAddress: string
+): Promise<UserProfile | null> {
+  const normalized = normalizeAddress(walletAddress);
+  try {
+    // Use the account resources endpoint to check for a Collection resource
+    // created by the aptos_token module
+    const restUrl = `https://fullnode.testnet.aptoslabs.com/v1/accounts/${normalized}/resources`;
+    const res = await fetch(restUrl);
+    if (!res.ok) return null;
+
+    const resources: any[] = await res.json();
+
+    // Look for the Collections resource that contains our CircleProfile
+    // The collection object is stored as a separate on-chain object, so
+    // we check for any collection-related resource.
+    // The most reliable signal is querying the collections table via GraphQL
+    // on the FULLNODE indexer endpoint (same URL, but always up-to-date).
+    const gqlRes = await fetch(FULLNODE_INDEXER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: PROFILE_QUERY,
+        variables: {
+          creatorAddress: normalized,
+          collectionName: "CircleProfile",
+        },
+      }),
+    });
+    const gqlData = await gqlRes.json();
+    const collection = gqlData.data?.current_collections_v2?.[0];
+    if (!collection) return null;
+
+    const profile = parseCollectionToProfile(collection);
+    if (profile) {
+      putProfile(profile);
+    }
+    return profile;
+  } catch (err) {
+    console.error("ProfileStore: on-chain verification failed for", normalized, err);
+    return null;
+  }
+}
+

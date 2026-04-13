@@ -78,7 +78,7 @@ interface FileData {
 
 export default function AppPage() {
   const { connected, connect, account, signAndSubmitTransaction } = useWallet();
-  const { profile, loading: authLoading, logout, refreshProfile } = useAuth();
+  const { profile, loading: authLoading, lookupPhase, setProfile, logout, refreshProfile } = useAuth();
   const queryClient = useQueryClient();
   
   // Multi-file state
@@ -448,7 +448,7 @@ export default function AppPage() {
         collectionId: "", // Will be populated by background indexer revalidation
       };
       
-      setProfile(immediateProfile); // Also writes to localStorage + local registry
+      setProfile(immediateProfile); // Also writes to localStorage + local registry (instant auth)
       setIsAuthenticating(false);
       
       // Background: revalidate to get the collectionId (needed for profile editing)
@@ -548,7 +548,24 @@ export default function AppPage() {
                         <Wallet className="w-4 h-4 mr-2" />
                         CONNECT WALLET
                       </Button>
+                    ) : authLoading ? (
+                      /* ——— Progressive lookup feedback ——— */
+                      <div className="text-center space-y-6">
+                        <div className="flex flex-col items-center gap-4 py-4">
+                          <Loader2 className="w-6 h-6 text-orange-500 animate-spin" />
+                          <div className="text-xs tracking-widest text-gray-300 font-medium uppercase">
+                            {lookupPhase === 'cache' && 'CHECKING LOCAL CACHE...'}
+                            {lookupPhase === 'indexer' && 'SEARCHING THE NETWORK...'}
+                            {lookupPhase === 'chain' && 'VERIFYING ON-CHAIN...'}
+                            {(lookupPhase === 'idle' || lookupPhase === 'done') && 'SEARCHING...'}
+                          </div>
+                          <p className="text-xs text-gray-500 max-w-xs">
+                            Looking up your decentralized profile. This may take a moment on first login.
+                          </p>
+                        </div>
+                      </div>
                     ) : !profile ? (
+                      /* ——— All phases exhausted — genuinely no profile ——— */
                       <div className="text-center space-y-6">
                         <div className="p-4 bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-medium tracking-widest uppercase">
                           No account found for this wallet.
