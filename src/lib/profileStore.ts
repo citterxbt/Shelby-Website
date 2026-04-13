@@ -17,8 +17,8 @@ import type { UserProfile } from "../contexts/AuthContext";
 // ——— Constants ———
 const STORE_KEY = "circle_profiles"; // Map<normalizedAddress, UserProfile>
 const INDEXER_URL = "https://api.testnet.aptoslabs.com/v1/graphql";
-// Fullnode GraphQL — authoritative, zero propagation delay vs the indexer
-const FULLNODE_INDEXER_URL = "https://api.testnet.aptoslabs.com/v1/graphql";
+// Fullnode REST API — authoritative, zero propagation delay vs the indexer
+const FULLNODE_REST = "https://fullnode.testnet.aptoslabs.com/v1";
 
 // ——— Address Normalization ———
 export function normalizeAddress(addr: string): string {
@@ -265,9 +265,15 @@ export async function revalidateWithRetry(
 // ——— Direct Fullnode Verification (Layer 3) ———
 
 /**
- * Query the Aptos fullnode directly to check for a CircleProfile collection.
- * The fullnode reflects the latest on-chain state with NO propagation delay,
- * unlike the indexer which can lag by seconds or minutes.
+ * Query the Aptos fullnode REST API directly to verify a CircleProfile exists.
+ * Unlike the indexer (Layer 2), the fullnode reflects the latest on-chain
+ * state with ZERO propagation delay.
+ *
+ * Strategy: fetch the account's transactions from the fullnode and search
+ * for the `create_collection` call with "CircleProfile" as the collection
+ * name. The profile data is embedded in the transaction payload's
+ * description argument, so we can reconstruct the full profile without
+ * any indexer dependency.
  *
  * This is the ultimate fallback — if this returns null, the profile
  * genuinely does not exist on-chain.
@@ -277,41 +283,78 @@ export async function verifyProfileOnChain(
 ): Promise<UserProfile | null> {
   const normalized = normalizeAddress(walletAddress);
   try {
-    // Use the account resources endpoint to check for a Collection resource
-    // created by the aptos_token module
-    const restUrl = `https://fullnode.testnet.aptoslabs.com/v1/accounts/${normalized}/resources`;
-    const res = await fetch(restUrl);
-    if (!res.ok) return null;
+    // ——— Step 1: Confirm the account exists on the fullnode ———
+    // This is authoritative — if the fullnode doesn't recognise this
+    // address, the account has never transacted on-chain.
+    const accountRes = await fetch(
+      `${FULLNODE_REST}/accounts/${normalized}`
+    );
+    if (!accountRes.ok) return null;
 
-    const resources: any[] = await res.json();
+    // ——— Step 2: Search the account's transactions for CircleProfile ———
+    // The fullnode REST endpoint `/accounts/{addr}/transactions` returns
+    // transactions submitted BY this account, ordered by sequence number.
+    // We scan for the `create_collection` entry-function call whose
+    // third argument (collection name) is "CircleProfile".
+    const txRes = await fetch(
+      `${FULLNODE_REST}/accounts/${normalized}/transactions?limit=100`
+    );
+    if (!txRes.ok) return null;
 
-    // Look for the Collections resource that contains our CircleProfile
-    // The collection object is stored as a separate on-chain object, so
-    // we check for any collection-related resource.
-    // The most reliable signal is querying the collections table via GraphQL
-    // on the FULLNODE indexer endpoint (same URL, but always up-to-date).
-    const gqlRes = await fetch(FULLNODE_INDEXER_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: PROFILE_QUERY,
-        variables: {
-          creatorAddress: normalized,
-          collectionName: "CircleProfile",
-        },
-      }),
-    });
-    const gqlData = await gqlRes.json();
-    const collection = gqlData.data?.current_collections_v2?.[0];
-    if (!collection) return null;
+    const transactions: any[] = await txRes.json();
 
-    const profile = parseCollectionToProfile(collection);
-    if (profile) {
-      putProfile(profile);
+    for (const tx of transactions) {
+      // Only inspect successful user transactions
+      if (tx.type !== "user_transaction" || !tx.success) continue;
+
+      const payload = tx.payload;
+      if (!payload || payload.type !== "entry_function_payload") continue;
+
+      // Match any create_collection variant
+      if (!payload.function?.includes("create_collection")) continue;
+
+      // Arguments layout: [description, maxSupply, name, uri, ...]
+      const args: string[] = payload.arguments || [];
+      if (args[2] !== "CircleProfile") continue;
+
+      // ✅ Found the CircleProfile creation transaction.
+      // args[0] is the description — a JSON-encoded profile payload.
+      const description = args[0];
+      try {
+        const data = JSON.parse(description);
+        const profile: UserProfile = {
+          walletAddress: normalized,
+          username: data.username || "Unknown",
+          fullName: data.fullName || "Unknown",
+          profilePictureUrl: data.profilePictureUrl || "",
+          createdAt: data.createdAt || Date.now(),
+          collectionId: "", // Populated later by background indexer revalidation
+        };
+        putProfile(profile);
+        return profile;
+      } catch {
+        // Description wasn't valid JSON — build a minimal profile
+        const profile: UserProfile = {
+          walletAddress: normalized,
+          username: description || "Unknown",
+          fullName: "Unknown",
+          profilePictureUrl: "",
+          createdAt: Date.now(),
+          collectionId: "",
+        };
+        putProfile(profile);
+        return profile;
+      }
     }
-    return profile;
+
+    // No CircleProfile creation found in the account's transactions
+    return null;
   } catch (err) {
-    console.error("ProfileStore: on-chain verification failed for", normalized, err);
+    console.error(
+      "ProfileStore: on-chain verification failed for",
+      normalized,
+      err
+    );
     return null;
   }
 }
