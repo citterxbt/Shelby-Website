@@ -26,7 +26,7 @@ export default function DirectoryPage() {
     if (!term) return;
     
     // If it looks like an address, normalize and go directly
-    if (term.startsWith("0x") && term.length > 60) {
+    if (/^0x[0-9a-fA-F]+$/.test(term)) {
       navigate(`/directory/${normalizeAddress(term)}`);
       return;
     }

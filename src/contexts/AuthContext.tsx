@@ -108,39 +108,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfile = async (walletAddress: string) => {
-    try {
-      const result = await fetchProfileWithRetry(walletAddress);
-      setProfile(result);
-    } catch (err) {
-      console.error(err);
-      setProfile(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Derive a stable address string to prevent useEffect re-triggers
+  // from wallet adapter object reference changes
+  const walletAddress = connected && account?.address
+    ? (typeof account.address === 'string' ? account.address : account.address.toString())
+    : null;
 
   useEffect(() => {
-    if (connected && account) {
+    if (walletAddress) {
       setLoading(true);
-      // Get the address string from the wallet and normalize it
-      const rawAddr = typeof account.address === 'string'
-        ? account.address
-        : account.address.toString();
-      fetchProfile(rawAddr);
-    } else {
+      let cancelled = false;
+
+      fetchProfileWithRetry(walletAddress)
+        .then(result => {
+          if (!cancelled) {
+            setProfile(result);
+            setLoading(false);
+          }
+        })
+        .catch(err => {
+          if (!cancelled) {
+            console.error(err);
+            setProfile(null);
+            setLoading(false);
+          }
+        });
+
+      return () => { cancelled = true; };
+    } else if (!connected) {
+      // Only clear profile when wallet is disconnected, not during
+      // transient states where account is briefly unavailable
       setProfile(null);
       setLoading(false);
     }
-  }, [connected, account]);
+  }, [walletAddress, connected]);
 
   const refreshProfile = async () => {
-    if (account) {
+    if (walletAddress) {
       setLoading(true);
-      const rawAddr = typeof account.address === 'string'
-        ? account.address
-        : account.address.toString();
-      await fetchProfile(rawAddr);
+      try {
+        const result = await fetchProfileWithRetry(walletAddress);
+        setProfile(result);
+      } catch (err) {
+        console.error(err);
+        setProfile(null);
+      } finally {
+        setLoading(false);
+      }
     }
   };
 

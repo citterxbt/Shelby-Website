@@ -60,8 +60,15 @@ export default function UserProfilePage() {
         try {
           const res = await fetch(`${SHELBY_API_BASE}/${userId}/files.json`);
           if (res.ok) {
-            const data = await res.json();
-            setMyFiles(Array.isArray(data) ? data : []);
+            // Read as text and strip null bytes from padded Shelby blob
+            const rawText = await res.text();
+            const cleanText = rawText.replace(/\0+$/g, '').trim();
+            if (cleanText) {
+              const data = JSON.parse(cleanText);
+              setMyFiles(Array.isArray(data) ? data : []);
+            } else {
+              setMyFiles([]);
+            }
           } else {
             setMyFiles([]);
           }
