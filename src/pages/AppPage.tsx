@@ -4,12 +4,13 @@ import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Select } from "@/src/components/ui/select";
 import { useUploadBlobs } from "@shelby-protocol/react";
-import { UploadCloud, CheckCircle2, Loader2, AlertCircle, FileText, Wallet, Users, Download, Image as ImageIcon, Settings, X, Plus, Zap } from "lucide-react";
+import { UploadCloud, CheckCircle2, Loader2, AlertCircle, FileText, Wallet, Users, Download, Image as ImageIcon, Settings, X, Plus, Zap, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 
 const SHELBY_API_BASE = "https://api.testnet.shelby.xyz/shelby/v1/blobs";
+const SHELBY_EXPLORER_BASE = "https://explorer.shelby.xyz/testnet/account";
 
 // ——— Dynamic Pricing Configuration ———
 // Base rate per MB per day in APT (testnet play money)
@@ -84,6 +85,8 @@ export default function AppPage() {
   const [step, setStep] = useState<"idle" | "initiating" | "approving" | "executing" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [resultUrls, setResultUrls] = useState<string[]>([]);
+  const [txHash, setTxHash] = useState<string>("");
+  const [uploadedFileNames, setUploadedFileNames] = useState<string[]>([]);
   
   // Auth UI State
   const [authMode, setAuthMode] = useState<"gateway" | "login" | "register">("gateway");
@@ -131,17 +134,7 @@ export default function AppPage() {
     }
   }, [profile]);
 
-  const uploadBlobs = useUploadBlobs({
-    onSuccess: async () => {
-      setStep("success");
-      setTimeout(() => fetchMyFiles(), 3000);
-    },
-    onError: (err: any) => {
-      console.error(err);
-      setErrorMsg(err.message || "An error occurred during the upload process.");
-      setStep("error");
-    }
-  });
+  const uploadBlobs = useUploadBlobs({});
 
   const uploadProfilePic = useUploadBlobs({});
 
@@ -181,11 +174,27 @@ export default function AppPage() {
     reader.readAsDataURL(file);
   };
 
+  // Build the correct Shelby explorer link for a given file
+  const buildExplorerLink = (address: string, fileName: string) => {
+    const encodedName = encodeURIComponent(fileName);
+    return `${SHELBY_EXPLORER_BASE}/${address}/blobs?name=${encodedName}`;
+  };
+
+  // Build the tx hash explorer link
+  const buildTxExplorerLink = (hash: string) => {
+    return `https://explorer.shelby.xyz/testnet/tx/${hash}`;
+  };
+
   const handleUploadFlow = async () => {
     if (files.length === 0 || !connected || !account || !signAndSubmitTransaction) {
       setErrorMsg("Please select files and connect your Aptos wallet first.");
       return;
     }
+
+    // Reset previous state
+    setTxHash("");
+    setUploadedFileNames([]);
+    setErrorMsg("");
 
     try {
       setStep("initiating");
@@ -194,7 +203,9 @@ export default function AppPage() {
       // Note: Shelby protocol requires blobs >= 1024 bytes; pad if needed
       const blobEntries: { blobName: string; blobData: Uint8Array }[] = [];
       const newFileRecords: FileData[] = [];
-      const urls: string[] = [];
+      const explorerLinks: string[] = [];
+      const fileNames: string[] = [];
+      const walletAddress = account.address.toString();
 
       for (const file of files) {
         const arrayBuffer = await file.arrayBuffer();
@@ -208,15 +219,16 @@ export default function AppPage() {
         }
         
         const blobName = file.name;
-        const encodedBlobName = encodeURIComponent(blobName);
-        const url = `${SHELBY_API_BASE}/${account.address.toString()}/${encodedBlobName}`;
-        urls.push(url);
+        const url = `${SHELBY_API_BASE}/${walletAddress}/${encodeURIComponent(blobName)}`;
+        const explorerLink = buildExplorerLink(walletAddress, blobName);
+        explorerLinks.push(explorerLink);
+        fileNames.push(blobName);
 
         const expirationDate = retention === "-1" ? -1 : Date.now() + parseInt(retention) * 86400000;
 
         newFileRecords.push({
-          id: `${account.address.toString()}_${Date.now()}_${blobName}`,
-          uploaderId: account.address.toString(),
+          id: `${walletAddress}_${Date.now()}_${blobName}`,
+          uploaderId: walletAddress,
           blobName,
           url,
           size: file.size,
@@ -227,12 +239,13 @@ export default function AppPage() {
         blobEntries.push({ blobName, blobData: fileData });
       }
 
-      setResultUrls(urls);
+      setResultUrls(explorerLinks);
+      setUploadedFileNames(fileNames);
 
       // Fetch existing files.json and merge
       let existingFiles: FileData[] = [];
       try {
-        const existingRes = await fetch(`${SHELBY_API_BASE}/${account.address.toString()}/files.json`);
+        const existingRes = await fetch(`${SHELBY_API_BASE}/${walletAddress}/files.json`);
         if (existingRes.ok) {
           // Read as text and strip any null bytes from previous padded uploads
           const rawText = await existingRes.text();
@@ -263,17 +276,64 @@ export default function AppPage() {
         ? Date.now() * 1000 + 365 * 86400000000 // 1 year for permanent
         : Date.now() * 1000 + parseInt(retention) * 86400000000;
 
-      uploadBlobs.mutate({
-        signer: { account: account.address.toString(), signAndSubmitTransaction },
+      // Use mutateAsync to properly await the on-chain transaction result
+      // This is the critical fix: .mutate() is fire-and-forget and causes
+      // the step state to race ahead of the actual transaction outcome.
+      // .mutateAsync() returns a promise that resolves/rejects with the
+      // actual on-chain result, so we can correctly determine success/failure.
+      setStep("executing");
+      
+      const result = await uploadBlobs.mutateAsync({
+        signer: { account: walletAddress, signAndSubmitTransaction },
         blobs: blobEntries,
         expirationMicros
       });
-      
-      setStep("executing");
+
+      // Extract tx hash from the mutation result
+      const hash = (result as any)?.hash || (result as any)?.transaction_hash || (result as any)?.txHash || "";
+      if (hash) {
+        setTxHash(hash);
+      }
+
+      // ✅ Transaction confirmed on-chain — update UI immediately
+      setStep("success");
+
+      // Optimistic update: immediately add new files to the local file list
+      // so the user sees them without waiting for the Shelby API to propagate
+      setMyFiles(prev => {
+        const currentBlobNames = new Set(prev.map(f => f.blobName));
+        const trulyNew = newFileRecords.filter(f => !currentBlobNames.has(f.blobName));
+        return [...trulyNew, ...prev];
+      });
+
+      // Also do a delayed refetch to sync with the authoritative on-chain state
+      setTimeout(() => fetchMyFiles(), 5000);
+      setTimeout(() => fetchMyFiles(), 15000);
       
     } catch (err: any) {
-      console.error(err);
-      setErrorMsg(err.message || "An error occurred during the upload process.");
+      console.error("Upload failed:", err);
+      
+      // Build a descriptive error message based on the failure context
+      let descriptiveError = "";
+      const rawMsg = err?.message || String(err);
+      
+      if (rawMsg.includes("rejected") || rawMsg.includes("User rejected") || rawMsg.includes("cancelled") || rawMsg.includes("denied")) {
+        descriptiveError = "Transaction rejected: You declined the transaction in your wallet. No files were uploaded and no fees were charged.";
+      } else if (rawMsg.includes("insufficient") || rawMsg.includes("balance") || rawMsg.includes("INSUFFICIENT_BALANCE")) {
+        descriptiveError = `Insufficient balance: Your wallet does not have enough APT to cover the upload fee of ~${estimatedFee.toFixed(6)} APT. Please fund your wallet and try again.`;
+      } else if (rawMsg.includes("timeout") || rawMsg.includes("ETIMEDOUT") || rawMsg.includes("network")) {
+        descriptiveError = "Network error: The connection to the Shelby testnet timed out. Please check your internet connection and try again.";
+      } else if (rawMsg.includes("blob") || rawMsg.includes("size") || rawMsg.includes("too large")) {
+        descriptiveError = `File size error: One or more files exceed the allowed blob size for the Shelby protocol. Total upload size: ${formatFileSize(totalSize)}.`;
+      } else if (rawMsg.includes("already exists") || rawMsg.includes("duplicate")) {
+        descriptiveError = "Duplicate upload: One or more files with the same name already exist on-chain. Consider renaming the files and trying again.";
+      } else if (rawMsg.includes("SEQUENCE_NUMBER") || rawMsg.includes("sequence")) {
+        descriptiveError = "Transaction sequencing error: A previous transaction is still pending. Please wait a moment and try again.";
+      } else {
+        descriptiveError = `Upload failed: ${rawMsg}. Please verify your wallet connection and try again. If the issue persists, check the Shelby block explorer to confirm whether the transaction was processed.`;
+      }
+      
+      setErrorMsg(descriptiveError);
       setStep("error");
     }
   };
@@ -292,6 +352,8 @@ export default function AppPage() {
     setStep("idle");
     setErrorMsg("");
     setResultUrls([]);
+    setTxHash("");
+    setUploadedFileNames([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -827,20 +889,45 @@ export default function AppPage() {
                             <div className="w-full">
                               <h4 className="text-xs font-bold tracking-widest text-orange-400 mb-2">UPLOAD SUCCESSFUL</h4>
                               <p className="text-xs text-gray-400 mb-4 leading-relaxed">
-                                {resultUrls.length} file{resultUrls.length > 1 ? 's have' : ' has'} been secured on the Shelby testnet.
+                                {uploadedFileNames.length} file{uploadedFileNames.length > 1 ? 's have' : ' has'} been secured on the Shelby testnet.
                               </p>
-                              <div className="space-y-2 mb-6 max-h-32 overflow-y-auto">
-                                {resultUrls.map((url, i) => (
+
+                              {/* Transaction Hash Link */}
+                              {txHash && (
+                                <div className="mb-4 p-3 bg-black border border-orange-500/20">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-xs tracking-widest text-gray-500">TX HASH</span>
+                                  </div>
                                   <a 
-                                    key={i}
-                                    href={url} 
+                                    href={buildTxExplorerLink(txHash)} 
                                     target="_blank" 
                                     rel="noreferrer"
-                                    className="text-xs font-mono text-orange-400 hover:text-orange-300 underline break-all block"
+                                    className="text-xs font-mono text-orange-400 hover:text-orange-300 underline break-all flex items-center gap-1.5"
                                   >
-                                    {url}
+                                    {txHash.slice(0, 12)}...{txHash.slice(-10)}
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
                                   </a>
-                                ))}
+                                </div>
+                              )}
+
+                              {/* Explorer Links per File */}
+                              <div className="space-y-2 mb-6 max-h-40 overflow-y-auto">
+                                {uploadedFileNames.map((name, i) => {
+                                  const explorerUrl = resultUrls[i] || buildExplorerLink(account?.address.toString() || "", name);
+                                  return (
+                                    <a 
+                                      key={i}
+                                      href={explorerUrl} 
+                                      target="_blank" 
+                                      rel="noreferrer"
+                                      className="flex items-center gap-2 text-xs text-gray-300 hover:text-orange-300 transition-colors group"
+                                    >
+                                      <FileText className="w-3.5 h-3.5 text-gray-500 group-hover:text-orange-400 shrink-0" />
+                                      <span className="truncate">{name}</span>
+                                      <ExternalLink className="w-3 h-3 text-gray-600 group-hover:text-orange-400 shrink-0 ml-auto" />
+                                    </a>
+                                  );
+                                })}
                               </div>
                               <Button 
                                 variant="outline" 
@@ -862,16 +949,39 @@ export default function AppPage() {
                         >
                           <div className="flex items-start gap-4">
                             <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                            <div>
+                            <div className="w-full">
                               <h4 className="text-xs font-bold tracking-widest text-red-400 mb-2">UPLOAD FAILED</h4>
-                              <p className="text-xs text-red-400/80 font-medium leading-relaxed mb-6">{errorMsg}</p>
-                              <Button 
-                                variant="outline" 
-                                onClick={() => setStep("idle")}
-                                className="w-full border-red-500/30 text-red-400 hover:bg-red-500/20 bg-transparent rounded-none text-xs tracking-widest h-10"
-                              >
-                                TRY AGAIN
-                              </Button>
+                              <p className="text-xs text-red-400/80 font-medium leading-relaxed mb-4">{errorMsg}</p>
+                              <div className="p-3 bg-black border border-red-500/10 mb-6">
+                                <p className="text-xs text-gray-500 leading-relaxed">
+                                  If you believe this transaction succeeded on-chain, check the{" "}
+                                  <a 
+                                    href="https://explorer.shelby.xyz/testnet" 
+                                    target="_blank" 
+                                    rel="noreferrer"
+                                    className="text-red-400 hover:text-red-300 underline"
+                                  >
+                                    Shelby Block Explorer
+                                  </a>
+                                  {" "}to verify the transaction status.
+                                </p>
+                              </div>
+                              <div className="flex gap-3">
+                                <Button 
+                                  variant="outline" 
+                                  onClick={() => { setStep("idle"); setErrorMsg(""); }}
+                                  className="flex-1 border-red-500/30 text-red-400 hover:bg-red-500/20 bg-transparent rounded-none text-xs tracking-widest h-10"
+                                >
+                                  TRY AGAIN
+                                </Button>
+                                <Button 
+                                  variant="outline" 
+                                  onClick={() => fetchMyFiles()}
+                                  className="flex-1 border-white/10 text-gray-400 hover:bg-white/10 bg-transparent rounded-none text-xs tracking-widest h-10"
+                                >
+                                  REFRESH FILES
+                                </Button>
+                              </div>
                             </div>
                           </div>
                         </motion.div>
