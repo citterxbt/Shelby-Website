@@ -1,33 +1,20 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Search, Users, Loader2 } from "lucide-react";
 import { Input } from "@/src/components/ui/input";
 import { Button } from "@/src/components/ui/button";
 import {
   normalizeAddress,
-  searchProfiles,
-  syncAllFromIndexer,
+  searchProfilesByName,
 } from "../lib/profileStore";
 
 export default function DirectoryPage() {
   const [searchAddress, setSearchAddress] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
-  const [searchPhase, setSearchPhase] = useState<string>("");
   const navigate = useNavigate();
   // Track the current search request to discard stale responses
   const searchIdRef = useRef(0);
-  // Track whether the background sync has completed
-  const syncDoneRef = useRef(false);
-
-  // ——— Background Sync: enrich local store from indexer silently ———
-  // Runs once on page mount. Populates the local store with ALL
-  // CircleProfile collections so that search is comprehensive.
-  useEffect(() => {
-    syncAllFromIndexer().then(() => {
-      syncDoneRef.current = true;
-    });
-  }, []);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,42 +27,16 @@ export default function DirectoryPage() {
       return;
     }
     
-    // Otherwise, search by username/fullName in the local store
+    // Otherwise, search by username/fullName via live indexer query
     setIsSearching(true);
     setSearchError("");
     const mySearchId = ++searchIdRef.current;
 
-    // ——— Multi-attempt search with sync retries ———
-    // On a fresh browser the local store is empty. We need to sync
-    // from the indexer first, and retry if the first sync misses data.
-    const MAX_SYNC_ATTEMPTS = 3;
-    const SYNC_RETRY_DELAY = 2000; // ms
-
-    for (let attempt = 1; attempt <= MAX_SYNC_ATTEMPTS; attempt++) {
-      // Discard if a newer search has started
-      if (searchIdRef.current !== mySearchId) return;
-
-      setSearchPhase(
-        attempt === 1
-          ? "SYNCING DIRECTORY..."
-          : `RETRYING (${attempt}/${MAX_SYNC_ATTEMPTS})...`
-      );
-
-      // Sync from the indexer (first attempt uses existing sync if done)
-      if (!syncDoneRef.current || attempt > 1) {
-        try {
-          await syncAllFromIndexer();
-          syncDoneRef.current = true;
-        } catch {
-          // Non-fatal — search whatever we have locally
-        }
-      }
+    try {
+      const results = await searchProfilesByName(term);
 
       // Discard if a newer search has started
       if (searchIdRef.current !== mySearchId) return;
-
-      // Search locally
-      const results = searchProfiles(term);
 
       // Exact username match takes priority
       const exactMatch = results.find(
@@ -84,29 +45,25 @@ export default function DirectoryPage() {
 
       if (exactMatch) {
         navigate(`/directory/${exactMatch.walletAddress}`);
-        setIsSearching(false);
-        setSearchPhase("");
         return;
       }
 
       // Partial match — use the first result
       if (results.length > 0) {
         navigate(`/directory/${results[0].walletAddress}`);
-        setIsSearching(false);
-        setSearchPhase("");
         return;
       }
 
-      // No results yet — wait before retrying (unless last attempt)
-      if (attempt < MAX_SYNC_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, SYNC_RETRY_DELAY));
+      // No results
+      setSearchError("User not found. Try searching by wallet address (0x...) for best results.");
+    } catch (err) {
+      console.error("Directory search error:", err);
+      setSearchError("Search failed. Please try again.");
+    } finally {
+      if (searchIdRef.current === mySearchId) {
+        setIsSearching(false);
       }
     }
-
-    // All attempts exhausted — no results
-    setSearchError("User not found. Try searching by wallet address (0x...) for best results.");
-    setIsSearching(false);
-    setSearchPhase("");
   };
 
   return (
@@ -147,10 +104,10 @@ export default function DirectoryPage() {
                 {isSearching ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
               </Button>
             </div>
-            {isSearching && searchPhase && (
+            {isSearching && (
               <div className="text-orange-400 text-xs font-bold tracking-widest mt-2 px-2 flex items-center gap-2">
                 <Loader2 className="w-3 h-3 animate-spin" />
-                {searchPhase}
+                SEARCHING...
               </div>
             )}
             {searchError && (

@@ -8,10 +8,7 @@ import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { useUploadBlobs, useAccountBlobs } from "@shelby-protocol/react";
 import {
   normalizeAddress,
-  getProfile,
-  putProfile,
-  revalidateFromIndexer,
-  verifyProfileOnChain,
+  lookupProfile,
 } from "../lib/profileStore";
 
 const SHELBY_API_BASE = "https://api.testnet.shelby.xyz/shelby/v1/blobs";
@@ -78,10 +75,7 @@ export default function UserProfilePage() {
   const profilePicInputRef = useRef<HTMLInputElement>(null);
   const uploadProfilePic = useUploadBlobs({});
 
-  // ——— Multi-layer profile fetch ———
-  // Layer 1: localStorage (instant)
-  // Layer 2: Indexer GraphQL (background)
-  // Layer 3: Fullnode REST API (authoritative fallback)
+  // ——— Direct on-chain profile lookup (no cache) ———
   useEffect(() => {
     if (!userId) return;
     let cancelled = false;
@@ -93,51 +87,25 @@ export default function UserProfilePage() {
       setEditProfilePicPreview(p.profilePictureUrl);
     };
 
-    // LAYER 1: Read from local store (0ms)
-    const cached = getProfile(userId);
-    if (cached) {
-      applyProfile(cached);
-      setLoading(false);
-    }
+    setLoading(true);
 
-    // LAYER 2 + 3: Indexer → Fullnode chain
-    (async () => {
-      // Try the indexer first
-      try {
-        const indexerResult = await revalidateFromIndexer(userId);
+    lookupProfile(userId)
+      .then(result => {
         if (cancelled) return;
-        if (indexerResult) {
-          applyProfile(indexerResult);
-          setLoading(false);
-          return;
+        if (result) {
+          applyProfile(result);
+        } else {
+          setProfile(null);
         }
-      } catch {
-        // Indexer failed — fall through to fullnode
-      }
-
-      if (cancelled) return;
-
-      // LAYER 3: Direct fullnode verification (zero indexer dependency)
-      try {
-        const chainResult = await verifyProfileOnChain(userId);
-        if (cancelled) return;
-        if (chainResult) {
-          applyProfile(chainResult);
+        setLoading(false);
+      })
+      .catch(err => {
+        if (!cancelled) {
+          console.error("UserProfilePage: lookup failed", err);
+          setProfile(null);
           setLoading(false);
-          return;
         }
-      } catch {
-        // Fullnode also failed — fall through
-      }
-
-      if (cancelled) return;
-
-      // All layers exhausted — keep cached profile if we have one
-      if (!cached) {
-        setProfile(null);
-      }
-      setLoading(false);
-    })();
+      });
 
     return () => { cancelled = true; };
   }, [userId]);
@@ -223,8 +191,6 @@ export default function UserProfilePage() {
       
       const updatedProfile = { ...profile, ...profileData };
       setProfile(updatedProfile);
-      // Persist the updated profile to the local store
-      putProfile(updatedProfile);
       setIsEditing(false);
     } catch (err: any) {
       console.error(err);

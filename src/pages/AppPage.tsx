@@ -78,7 +78,7 @@ interface FileData {
 
 export default function AppPage() {
   const { connected, connect, account, signAndSubmitTransaction } = useWallet();
-  const { profile, loading: authLoading, lookupPhase, setProfile, logout, refreshProfile } = useAuth();
+  const { profile, loading: authLoading, setProfile, logout, refreshProfile } = useAuth();
   const queryClient = useQueryClient();
   
   // Multi-file state
@@ -448,7 +448,7 @@ export default function AppPage() {
         collectionId: "", // Will be populated by background indexer revalidation
       };
       
-      setProfile(immediateProfile); // Also writes to localStorage + local registry (instant auth)
+      setProfile(immediateProfile); // React state only — instant auth, no cache
       setIsAuthenticating(false);
       
       // Background: revalidate to get the collectionId (needed for profile editing)
@@ -549,15 +549,12 @@ export default function AppPage() {
                         CONNECT WALLET
                       </Button>
                     ) : authLoading ? (
-                      /* ——— Progressive lookup feedback ——— */
+                      /* ——— Loading: verifying on-chain ——— */
                       <div className="text-center space-y-6">
                         <div className="flex flex-col items-center gap-4 py-4">
                           <Loader2 className="w-6 h-6 text-orange-500 animate-spin" />
                           <div className="text-xs tracking-widest text-gray-300 font-medium uppercase">
-                            {lookupPhase === 'cache' && 'CHECKING LOCAL CACHE...'}
-                            {lookupPhase === 'indexer' && 'SEARCHING THE NETWORK...'}
-                            {lookupPhase === 'chain' && 'VERIFYING ON-CHAIN...'}
-                            {(lookupPhase === 'idle' || lookupPhase === 'done') && 'SEARCHING...'}
+                            VERIFYING ON-CHAIN...
                           </div>
                           <p className="text-xs text-gray-500 max-w-xs">
                             Looking up your decentralized profile. This may take a moment on first login.
