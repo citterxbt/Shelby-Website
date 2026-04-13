@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
 
 export interface UserProfile {
@@ -37,6 +37,46 @@ const PROFILE_QUERY = `
     }
   }
 `;
+
+// ——— localStorage Profile Cache ———
+// Profiles are cached by normalized wallet address to survive wallet
+// disconnect/reconnect cycles. This prevents the "No account found"
+// error caused by indexer eventual-consistency lag on re-login.
+const PROFILE_CACHE_KEY_PREFIX = "circle_profile_";
+
+function getCachedProfile(walletAddress: string): UserProfile | null {
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_KEY_PREFIX + walletAddress);
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    // Basic sanity check: must have username and walletAddress
+    if (cached && cached.username && cached.walletAddress) {
+      return cached as UserProfile;
+    }
+  } catch {
+    // Corrupted cache — ignore
+  }
+  return null;
+}
+
+function setCachedProfile(walletAddress: string, profile: UserProfile): void {
+  try {
+    localStorage.setItem(
+      PROFILE_CACHE_KEY_PREFIX + walletAddress,
+      JSON.stringify(profile)
+    );
+  } catch {
+    // localStorage full or unavailable — non-fatal
+  }
+}
+
+function clearCachedProfile(walletAddress: string): void {
+  try {
+    localStorage.removeItem(PROFILE_CACHE_KEY_PREFIX + walletAddress);
+  } catch {
+    // Ignore
+  }
+}
 
 // Normalize any Aptos address to full 66-char lowercase hex (0x + 64 chars)
 // Pure JS - no SDK dependency
@@ -88,7 +128,8 @@ async function queryIndexer(walletAddress: string): Promise<UserProfile | null> 
 }
 
 // Retry logic to handle Aptos indexer eventual consistency lag
-async function fetchProfileWithRetry(walletAddress: string, retries = 3, delayMs = 1500): Promise<UserProfile | null> {
+// Increased to 5 retries with 2s delay (10s total) for reliability
+async function fetchProfileWithRetry(walletAddress: string, retries = 5, delayMs = 2000): Promise<UserProfile | null> {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const result = await queryIndexer(walletAddress);
@@ -105,7 +146,7 @@ async function fetchProfileWithRetry(walletAddress: string, retries = 3, delayMs
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { connected, account, disconnect } = useWallet();
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profile, setProfileState] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Derive a stable address string to prevent useEffect re-triggers
@@ -114,22 +155,55 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     ? (typeof account.address === 'string' ? account.address : account.address.toString())
     : null;
 
+  const normalizedWallet = walletAddress ? normalizeAddress(walletAddress) : null;
+
+  // Wrap setProfile to also update the localStorage cache
+  const setProfile = useCallback((newProfile: UserProfile | null) => {
+    setProfileState(newProfile);
+    if (newProfile && newProfile.walletAddress) {
+      setCachedProfile(normalizeAddress(newProfile.walletAddress), newProfile);
+    }
+  }, []);
+
   useEffect(() => {
-    if (walletAddress) {
-      setLoading(true);
+    if (normalizedWallet) {
       let cancelled = false;
 
-      fetchProfileWithRetry(walletAddress)
+      // ——— PHASE 1: Load from cache immediately ———
+      // This prevents the "No account found" flash on re-login by
+      // showing the cached profile while we revalidate from the indexer.
+      const cached = getCachedProfile(normalizedWallet);
+      if (cached) {
+        setProfileState(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
+      // ——— PHASE 2: Revalidate from the indexer in background ———
+      fetchProfileWithRetry(normalizedWallet)
         .then(result => {
           if (!cancelled) {
-            setProfile(result);
+            if (result) {
+              // Update with fresh data from indexer
+              setProfileState(result);
+              setCachedProfile(normalizedWallet, result);
+            } else if (!cached) {
+              // No cached profile AND indexer returned nothing
+              setProfileState(null);
+            }
+            // If cached exists but indexer returned null, keep the cached
+            // profile — the indexer is likely just lagging
             setLoading(false);
           }
         })
         .catch(err => {
           if (!cancelled) {
             console.error(err);
-            setProfile(null);
+            // On error, keep the cached profile if we have one
+            if (!cached) {
+              setProfileState(null);
+            }
             setLoading(false);
           }
         });
@@ -138,20 +212,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } else if (!connected) {
       // Only clear profile when wallet is disconnected, not during
       // transient states where account is briefly unavailable
-      setProfile(null);
+      setProfileState(null);
       setLoading(false);
     }
-  }, [walletAddress, connected]);
+  }, [normalizedWallet, connected]);
 
   const refreshProfile = async () => {
-    if (walletAddress) {
+    if (normalizedWallet) {
       setLoading(true);
       try {
-        const result = await fetchProfileWithRetry(walletAddress);
-        setProfile(result);
+        const result = await fetchProfileWithRetry(normalizedWallet);
+        if (result) {
+          setProfileState(result);
+          setCachedProfile(normalizedWallet, result);
+        }
       } catch (err) {
         console.error(err);
-        setProfile(null);
       } finally {
         setLoading(false);
       }
@@ -159,8 +235,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
+    // Don't clear the cache on logout — user may reconnect the same wallet
+    // The cache ensures instant recognition on re-login
     disconnect();
-    setProfile(null);
+    setProfileState(null);
   };
 
   return (

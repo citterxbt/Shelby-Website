@@ -4,6 +4,7 @@ import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Select } from "@/src/components/ui/select";
 import { useUploadBlobs, useAccountBlobs } from "@shelby-protocol/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { UploadCloud, CheckCircle2, Loader2, AlertCircle, FileText, Wallet, Users, Download, Image as ImageIcon, Settings, X, Plus, Zap, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link } from "react-router-dom";
@@ -78,6 +79,7 @@ interface FileData {
 export default function AppPage() {
   const { connected, connect, account, signAndSubmitTransaction } = useWallet();
   const { profile, loading: authLoading, logout, refreshProfile } = useAuth();
+  const queryClient = useQueryClient();
   
   // Multi-file state
   const [files, setFiles] = useState<File[]>([]);
@@ -314,17 +316,14 @@ export default function AppPage() {
       // ✅ Transaction confirmed on-chain — update UI immediately
       setStep("success");
 
-      // Optimistic update: immediately add new files to the local file list
-      // so the user sees them without waiting for the Shelby API to propagate
-      setMyFiles(prev => {
-        const currentBlobNames = new Set(prev.map(f => f.blobName));
-        const trulyNew = newFileRecords.filter(f => !currentBlobNames.has(f.blobName));
-        return [...trulyNew, ...prev];
-      });
+      // Invalidate the React Query cache so useAccountBlobs refetches
+      // from the Shelby indexer with fresh data after upload
+      queryClient.invalidateQueries({ queryKey: ['accountBlobs'] });
 
-      // Also do a delayed refetch to sync with the authoritative on-chain state
-      setTimeout(() => fetchMyFiles(), 5000);
-      setTimeout(() => fetchMyFiles(), 15000);
+      // Delayed refetches to sync with the authoritative on-chain state
+      // (the indexer may take a few seconds to reflect the new blobs)
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ['accountBlobs'] }), 5000);
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ['accountBlobs'] }), 15000);
       
     } catch (err: any) {
       console.error("Upload flow error:", err);
@@ -368,26 +367,12 @@ export default function AppPage() {
           // ✅ On-chain transaction confirmed — show SUCCESS
           setStep("success");
           
-          // Optimistic update: add files to the local list immediately
-          const newRecords = uploadedFileNames.map((name, i) => ({
-            id: `${walletAddr}_${Date.now()}_${name}`,
-            uploaderId: walletAddr,
-            blobName: name,
-            url: `${SHELBY_API_BASE}/${walletAddr}/${encodeURIComponent(name)}`,
-            size: files[i]?.size || 0,
-            uploadDate: Date.now(),
-            expirationDate: retention === "-1" ? -1 : Date.now() + parseInt(retention) * 86400000
-          }));
-          
-          setMyFiles(prev => {
-            const currentBlobNames = new Set(prev.map(f => f.blobName));
-            const trulyNew = newRecords.filter(f => !currentBlobNames.has(f.blobName));
-            return [...trulyNew, ...prev];
-          });
+          // Invalidate the React Query cache so useAccountBlobs refetches
+          queryClient.invalidateQueries({ queryKey: ['accountBlobs'] });
           
           // Delayed refetches to sync with authoritative state
-          setTimeout(() => fetchMyFiles(), 5000);
-          setTimeout(() => fetchMyFiles(), 15000);
+          setTimeout(() => queryClient.invalidateQueries({ queryKey: ['accountBlobs'] }), 5000);
+          setTimeout(() => queryClient.invalidateQueries({ queryKey: ['accountBlobs'] }), 15000);
           return;
         }
       }
@@ -1048,7 +1033,7 @@ export default function AppPage() {
                                 </Button>
                                 <Button 
                                   variant="outline" 
-                                  onClick={() => fetchMyFiles()}
+                                  onClick={() => queryClient.invalidateQueries({ queryKey: ['accountBlobs'] })}
                                   className="flex-1 border-white/10 text-gray-400 hover:bg-white/10 bg-transparent rounded-none text-xs tracking-widest h-10"
                                 >
                                   REFRESH FILES
