@@ -172,13 +172,11 @@ export default function UserProfilePage() {
     fetchData();
   }, [userId]);
 
-  const handleDownload = (f: FileData) => {
-    const isExpired = f.expirationDate !== -1 && f.expirationDate < Date.now();
-    if (isExpired) {
-      alert("File has expired and is no longer accessible.");
-      return;
-    }
-    window.open(f.url, "_blank");
+  // Build the correct blob download URL from address + filename
+  // Never trust the stored `url` field — older records have explorer URLs
+  const getBlobUrl = (f: FileData) => {
+    const addr = f.uploaderId || userId || '';
+    return `${SHELBY_API_BASE}/${addr}/${encodeURIComponent(f.blobName)}`;
   };
 
   const handleProfilePicChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -470,13 +468,25 @@ export default function UserProfilePage() {
                         </div>
                       </div>
                       
-                      <Button 
-                        onClick={() => handleDownload(f)}
-                        className={`shrink-0 rounded-none text-xs tracking-widest font-bold h-10 px-6 ${isExpired ? 'bg-[#141414] text-gray-600 hover:bg-[#141414] cursor-not-allowed' : 'bg-white text-black hover:bg-gray-200'}`}
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        {isExpired ? "EXPIRED" : "DOWNLOAD"}
-                      </Button>
+                      {isExpired ? (
+                        <Button 
+                          disabled
+                          className="shrink-0 rounded-none text-xs tracking-widest font-bold h-10 px-6 bg-[#141414] text-gray-600 hover:bg-[#141414] cursor-not-allowed"
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          EXPIRED
+                        </Button>
+                      ) : (
+                        <a 
+                          href={getBlobUrl(f)} 
+                          target="_blank" 
+                          rel="noreferrer"
+                          className="shrink-0 rounded-none text-xs tracking-widest font-bold h-10 px-6 bg-white text-black hover:bg-gray-200 inline-flex items-center justify-center"
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          DOWNLOAD
+                        </a>
+                      )}
                     </div>
                   );
                 })}
