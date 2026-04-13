@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { UserProfile } from "../contexts/AuthContext";
 import { Loader2, AlertCircle, ArrowLeft, ShieldAlert, FileText, Download, Edit2, CheckCircle2, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
-import { useUploadBlobs } from "@shelby-protocol/react";
+import { useUploadBlobs, useAccountBlobs } from "@shelby-protocol/react";
 import { useRef } from "react";
 
 const SHELBY_API_BASE = "https://api.testnet.shelby.xyz/shelby/v1/blobs";
@@ -38,8 +38,35 @@ export default function UserProfilePage() {
   
   const normalizedWalletAddr = account ? normalizeAddress(account.address.toString()) : "";
   const isOwner = connected && normalizedWalletAddr === userId;
-  const [myFiles, setMyFiles] = useState<FileData[]>([]);
-  const [loadingFiles, setLoadingFiles] = useState(false);
+  // My Files — powered by Shelby SDK's useAccountBlobs
+  // This queries the Shelby indexer directly, so ALL uploaded blobs appear
+  const { data: accountBlobs, isLoading: loadingFiles } = useAccountBlobs({
+    account: userId ?? '',
+    enabled: !!userId && isOwner,
+  });
+
+  // Map BlobMetadata[] from the SDK to our FileData[] for display
+  // Filter out internal blobs (files.json, profile pics)
+  const myFiles: FileData[] = useMemo(() => {
+    if (!accountBlobs || !userId) return [];
+    return accountBlobs
+      .filter(blob => {
+        const suffix = blob.blobNameSuffix;
+        if (suffix === 'files.json') return false;
+        if (suffix.startsWith('profile_pic')) return false;
+        if (blob.isDeleted) return false;
+        return true;
+      })
+      .map(blob => ({
+        id: `${userId}_${blob.creationMicros}_${blob.blobNameSuffix}`,
+        uploaderId: userId,
+        blobName: blob.blobNameSuffix,
+        url: `${SHELBY_API_BASE}/${userId}/${encodeURIComponent(blob.blobNameSuffix)}`,
+        size: blob.size,
+        uploadDate: Math.floor(blob.creationMicros / 1000),
+        expirationDate: blob.expirationMicros === 0 ? -1 : Math.floor(blob.expirationMicros / 1000),
+      }));
+  }, [accountBlobs, userId]);
 
   // Edit Profile State
   const [isEditing, setIsEditing] = useState(false);
@@ -51,37 +78,6 @@ export default function UserProfilePage() {
   const [editError, setEditError] = useState("");
   const profilePicInputRef = useRef<HTMLInputElement>(null);
   const uploadProfilePic = useUploadBlobs({});
-
-  // FIX #5: Use correct Shelby API URL for file fetching
-  useEffect(() => {
-    if (isOwner && userId) {
-      const fetchMyFiles = async () => {
-        setLoadingFiles(true);
-        try {
-          const res = await fetch(`${SHELBY_API_BASE}/${userId}/files.json`);
-          if (res.ok) {
-            // Read as text and strip null bytes from padded Shelby blob
-            const rawText = await res.text();
-            const cleanText = rawText.replace(/\0+$/g, '').trim();
-            if (cleanText) {
-              const data = JSON.parse(cleanText);
-              setMyFiles(Array.isArray(data) ? data : []);
-            } else {
-              setMyFiles([]);
-            }
-          } else {
-            setMyFiles([]);
-          }
-        } catch (err) {
-          console.error(err);
-          setMyFiles([]);
-        } finally {
-          setLoadingFiles(false);
-        }
-      };
-      fetchMyFiles();
-    }
-  }, [isOwner, userId]);
 
   // FIX #3: Add retry logic for indexer queries + fetch collection_id
   useEffect(() => {

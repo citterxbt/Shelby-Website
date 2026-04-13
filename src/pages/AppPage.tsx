@@ -3,7 +3,7 @@ import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Select } from "@/src/components/ui/select";
-import { useUploadBlobs } from "@shelby-protocol/react";
+import { useUploadBlobs, useAccountBlobs } from "@shelby-protocol/react";
 import { UploadCloud, CheckCircle2, Loader2, AlertCircle, FileText, Wallet, Users, Download, Image as ImageIcon, Settings, X, Plus, Zap, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link } from "react-router-dom";
@@ -97,9 +97,36 @@ export default function AppPage() {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [authError, setAuthError] = useState("");
 
-  // My Files State
-  const [myFiles, setMyFiles] = useState<FileData[]>([]);
-  const [loadingFiles, setLoadingFiles] = useState(false);
+  // My Files State — powered by Shelby SDK's useAccountBlobs
+  // This queries the Shelby indexer directly, so ALL uploaded blobs appear
+  const { data: accountBlobs, isLoading: loadingFiles } = useAccountBlobs({
+    account: profile?.walletAddress ?? '',
+    enabled: !!profile?.walletAddress,
+  });
+
+  // Map BlobMetadata[] from the SDK to our FileData[] for display
+  // Filter out internal blobs (files.json, profile pics)
+  const myFiles: FileData[] = useMemo(() => {
+    if (!accountBlobs || !profile) return [];
+    return accountBlobs
+      .filter(blob => {
+        const suffix = blob.blobNameSuffix;
+        // Exclude internal manifest and profile pictures
+        if (suffix === 'files.json') return false;
+        if (suffix.startsWith('profile_pic')) return false;
+        if (blob.isDeleted) return false;
+        return true;
+      })
+      .map(blob => ({
+        id: `${profile.walletAddress}_${blob.creationMicros}_${blob.blobNameSuffix}`,
+        uploaderId: profile.walletAddress,
+        blobName: blob.blobNameSuffix,
+        url: `${SHELBY_API_BASE}/${profile.walletAddress}/${encodeURIComponent(blob.blobNameSuffix)}`,
+        size: blob.size,
+        uploadDate: Math.floor(blob.creationMicros / 1000),
+        expirationDate: blob.expirationMicros === 0 ? -1 : Math.floor(blob.expirationMicros / 1000),
+      }));
+  }, [accountBlobs, profile]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const profilePicInputRef = useRef<HTMLInputElement>(null);
@@ -109,37 +136,7 @@ export default function AppPage() {
   const retentionDays = parseInt(retention);
   const estimatedFee = useMemo(() => calculateFee(totalSize, retentionDays), [totalSize, retentionDays]);
 
-  const fetchMyFiles = async () => {
-    if (!profile) return;
-    setLoadingFiles(true);
-    try {
-      const res = await fetch(`${SHELBY_API_BASE}/${profile.walletAddress}/files.json`);
-      if (res.ok) {
-        // Read as text and strip null bytes from padded Shelby blob
-        const rawText = await res.text();
-        const cleanText = rawText.replace(/\0+$/g, '').trim();
-        if (cleanText) {
-          const data = JSON.parse(cleanText);
-          setMyFiles(Array.isArray(data) ? data : []);
-        } else {
-          setMyFiles([]);
-        }
-      } else {
-        setMyFiles([]);
-      }
-    } catch (err) {
-      console.error(err);
-      setMyFiles([]);
-    } finally {
-      setLoadingFiles(false);
-    }
-  };
 
-  useEffect(() => {
-    if (profile) {
-      fetchMyFiles();
-    }
-  }, [profile]);
 
   const uploadBlobs = useUploadBlobs({});
 
