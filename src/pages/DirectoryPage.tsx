@@ -1,130 +1,13 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Search, Users, Loader2 } from "lucide-react";
 import { Input } from "@/src/components/ui/input";
 import { Button } from "@/src/components/ui/button";
-import { normalizeAddress, getLocalRegistry } from "../contexts/AuthContext";
-
-const INDEXER_URL = "https://api.testnet.aptoslabs.com/v1/graphql";
-
-// ——— localStorage-backed Search Cache ———
-// The search cache persists across page navigations (unlike the previous
-// in-memory-only cache) and merges indexer results with the local profile
-// registry. This guarantees:
-// 1. Repeated searches always return the same results (no indexer replica drift)
-// 2. Newly registered profiles are instantly discoverable
-// 3. Search survives page navigation without re-fetching
-
-const SEARCH_CACHE_KEY = "circle_search_cache";
-const SEARCH_CACHE_TTL_MS = 60_000; // 60 seconds — longer TTL for stability
-
-interface CachedSearchData {
-  collections: Array<{ creator_address: string; description: string }>;
-  fetchedAt: number;
-}
-
-function getSearchCache(): CachedSearchData | null {
-  try {
-    const raw = localStorage.getItem(SEARCH_CACHE_KEY);
-    if (!raw) return null;
-    const cached: CachedSearchData = JSON.parse(raw);
-    if (cached && cached.collections && (Date.now() - cached.fetchedAt) < SEARCH_CACHE_TTL_MS) {
-      return cached;
-    }
-  } catch {
-    // Corrupted — ignore
-  }
-  return null;
-}
-
-function setSearchCache(data: CachedSearchData): void {
-  try {
-    localStorage.setItem(SEARCH_CACHE_KEY, JSON.stringify(data));
-  } catch {
-    // Non-fatal
-  }
-}
-
-function clearSearchCache(): void {
-  try {
-    localStorage.removeItem(SEARCH_CACHE_KEY);
-  } catch {
-    // Ignore
-  }
-}
-
-async function fetchAllProfiles(): Promise<Array<{ creator_address: string; description: string }>> {
-  // Return from localStorage cache if still valid
-  const cached = getSearchCache();
-  if (cached) {
-    return cached.collections;
-  }
-
-  const query = `
-    query GetProfiles($collectionName: String) {
-      current_collections_v2(
-        where: {collection_name: {_eq: $collectionName}}
-        order_by: {creator_address: asc}
-        limit: 500
-      ) {
-        creator_address
-        description
-      }
-    }
-  `;
-
-  const res = await fetch(INDEXER_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query,
-      variables: { collectionName: "CircleProfile" }
-    })
-  });
-
-  const resData = await res.json();
-  const collections = resData.data?.current_collections_v2 || [];
-
-  // Persist to localStorage
-  setSearchCache({
-    collections,
-    fetchedAt: Date.now()
-  });
-
-  return collections;
-}
-
-// ——— Unified Search ———
-// Searches both the indexer results (cached) AND the local profile registry.
-// The local registry contains profiles created on this device that the
-// indexer may not have ingested yet. This eliminates the window where a
-// newly registered user is unsearchable.
-function searchByUsername(
-  term: string,
-  indexerCollections: Array<{ creator_address: string; description: string }>
-): string | null {
-  const lowerTerm = term.toLowerCase();
-
-  // 1. Search indexer results first (authoritative when available)
-  for (const col of indexerCollections) {
-    try {
-      const data = JSON.parse(col.description);
-      if (data.username && data.username.toLowerCase() === lowerTerm) {
-        return normalizeAddress(col.creator_address);
-      }
-    } catch {}
-  }
-
-  // 2. Fall back to local registry (covers indexer lag)
-  const localProfiles = getLocalRegistry();
-  for (const entry of localProfiles) {
-    if (entry.username.toLowerCase() === lowerTerm) {
-      return entry.walletAddress; // Already normalized
-    }
-  }
-
-  return null;
-}
+import {
+  normalizeAddress,
+  searchProfiles,
+  syncAllFromIndexer,
+} from "../lib/profileStore";
 
 export default function DirectoryPage() {
   const [searchAddress, setSearchAddress] = useState("");
@@ -133,6 +16,17 @@ export default function DirectoryPage() {
   const navigate = useNavigate();
   // Track the current search request to discard stale responses
   const searchIdRef = useRef(0);
+  // Track whether the background sync has completed
+  const syncDoneRef = useRef(false);
+
+  // ——— Background Sync: enrich local store from indexer silently ———
+  // Runs once on page mount. Populates the local store with ALL
+  // CircleProfile collections so that search is comprehensive.
+  useEffect(() => {
+    syncAllFromIndexer().then(() => {
+      syncDoneRef.current = true;
+    });
+  }, []);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,49 +39,46 @@ export default function DirectoryPage() {
       return;
     }
     
-    // Otherwise, search by username
+    // Otherwise, search by username/fullName in the local store
     setIsSearching(true);
     setSearchError("");
     const mySearchId = ++searchIdRef.current;
 
-    // Retry logic for indexer consistency
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // If the background sync hasn't finished yet, wait for it
+    if (!syncDoneRef.current) {
       try {
-        // On retry, invalidate cache to force a fresh indexer fetch
-        if (attempt > 0) {
-          clearSearchCache();
-        }
-
-        const collections = await fetchAllProfiles();
-
-        // Discard if a newer search has started
-        if (searchIdRef.current !== mySearchId) return;
-
-        const foundAddress = searchByUsername(term, collections);
-        
-        if (foundAddress) {
-          navigate(`/directory/${foundAddress}`);
-          setIsSearching(false);
-          return;
-        }
-        
-        // If no result found and we still have retries, wait and try again
-        if (attempt < 2) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
-      } catch (err) {
-        console.error(`Search attempt ${attempt + 1} failed:`, err);
-        if (attempt < 2) {
-          clearSearchCache();
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
+        await syncAllFromIndexer();
+        syncDoneRef.current = true;
+      } catch {
+        // Non-fatal — we'll search whatever we have locally
       }
     }
-    
+
     // Discard if a newer search has started
     if (searchIdRef.current !== mySearchId) return;
 
-    // All retries exhausted
+    // ——— Instant local search ———
+    const results = searchProfiles(term);
+
+    // Exact username match takes priority
+    const exactMatch = results.find(
+      (p) => p.username?.toLowerCase() === term.toLowerCase()
+    );
+
+    if (exactMatch) {
+      navigate(`/directory/${exactMatch.walletAddress}`);
+      setIsSearching(false);
+      return;
+    }
+
+    // Partial match — use the first result
+    if (results.length > 0) {
+      navigate(`/directory/${results[0].walletAddress}`);
+      setIsSearching(false);
+      return;
+    }
+
+    // No results
     setSearchError("User not found. Try searching by wallet address (0x...) for best results.");
     setIsSearching(false);
   };

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { UserProfile } from "../contexts/AuthContext";
 import { Loader2, AlertCircle, ArrowLeft, ShieldAlert, FileText, Download, Edit2, CheckCircle2, Image as ImageIcon } from "lucide-react";
@@ -6,18 +6,16 @@ import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { useUploadBlobs, useAccountBlobs } from "@shelby-protocol/react";
-import { useRef } from "react";
+import {
+  normalizeAddress,
+  getProfile,
+  putProfile,
+  revalidateFromIndexer,
+} from "../lib/profileStore";
 
 const SHELBY_API_BASE = "https://api.testnet.shelby.xyz/shelby/v1/blobs";
-const INDEXER_URL = "https://api.testnet.aptoslabs.com/v1/graphql";
 
-// Normalize any Aptos address to full 66-char lowercase hex (0x + 64 chars)
-// Pure JS - no SDK dependency
-function normalizeAddress(addr: string): string {
-  let hex = addr.toLowerCase().trim();
-  if (hex.startsWith("0x")) hex = hex.slice(2);
-  return "0x" + hex.padStart(64, "0");
-}
+// normalizeAddress imported from profileStore
 
 interface FileData {
   id: string;
@@ -79,93 +77,44 @@ export default function UserProfilePage() {
   const profilePicInputRef = useRef<HTMLInputElement>(null);
   const uploadProfilePic = useUploadBlobs({});
 
-  // FIX #3: Add retry logic for indexer queries + fetch collection_id
+  // ——— Local-first profile fetch ———
+  // Instant read from ProfileStore, then background revalidation from indexer.
   useEffect(() => {
-    const fetchData = async () => {
-      if (!userId) return;
-      
-      const query = `
-        query GetProfile($creatorAddress: String, $collectionName: String) {
-          current_collections_v2(
-            where: {
-              creator_address: {_eq: $creatorAddress},
-              collection_name: {_eq: $collectionName}
-            }
-            limit: 1
-          ) {
-            collection_id
-            creator_address
-            description
-            uri
-          }
-        }
-      `;
+    if (!userId) return;
+    let cancelled = false;
 
-      // Retry up to 3 times for indexer consistency
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const res = await fetch(INDEXER_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              query,
-              variables: { 
-                creatorAddress: userId,
-                collectionName: "CircleProfile" 
-              }
-            })
-          });
-          
-          const resData = await res.json();
-          const collections = resData.data?.current_collections_v2 || [];
-          const collection = collections[0];
-          
-          if (collection) {
-            try {
-              const data = JSON.parse(collection.description || "{}");
-              const p: UserProfile = { 
-                ...data, 
-                walletAddress: userId,
-                collectionId: collection.collection_id,
-                profilePictureUrl: data.profilePictureUrl || (collection.uri !== "https://circle.storage/profile" ? collection.uri : "")
-              };
-              setProfile(p);
-              setEditUsername(p.username);
-              setEditFullName(p.fullName);
-              setEditProfilePicPreview(p.profilePictureUrl);
-              setLoading(false);
-              return; // Success, exit retry loop
-            } catch (e) {
-              const p: UserProfile = {
-                username: collection.description || "Unknown",
-                fullName: "Unknown",
-                walletAddress: userId,
-                collectionId: collection.collection_id,
-                profilePictureUrl: collection.uri !== "https://circle.storage/profile" ? collection.uri : "",
-                createdAt: Date.now()
-              };
-              setProfile(p);
-              setEditUsername(p.username);
-              setEditFullName(p.fullName);
-              setEditProfilePicPreview(p.profilePictureUrl);
-              setLoading(false);
-              return; // Success, exit retry loop
-            }
-          }
-        } catch (error) {
-          console.error(`Profile fetch attempt ${attempt + 1} failed:`, error);
-        }
-        
-        // Wait before retrying (except on last attempt)
-        if (attempt < 2) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
-      }
-      
-      // All retries exhausted
+    // INSTANT: Read from local store (0ms)
+    const cached = getProfile(userId);
+    if (cached) {
+      setProfile(cached);
+      setEditUsername(cached.username);
+      setEditFullName(cached.fullName);
+      setEditProfilePicPreview(cached.profilePictureUrl);
       setLoading(false);
-    };
-    fetchData();
+    }
+
+    // BACKGROUND: Revalidate from indexer (non-blocking)
+    revalidateFromIndexer(userId)
+      .then(result => {
+        if (cancelled) return;
+        if (result) {
+          setProfile(result);
+          setEditUsername(result.username);
+          setEditFullName(result.fullName);
+          setEditProfilePicPreview(result.profilePictureUrl);
+        } else if (!cached) {
+          // No local data AND no indexer result → truly not found
+          setProfile(null);
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        if (!cached) setProfile(null);
+        setLoading(false);
+      });
+
+    return () => { cancelled = true; };
   }, [userId]);
 
   // Build the correct blob download URL from address + filename
@@ -186,7 +135,7 @@ export default function UserProfilePage() {
     reader.readAsDataURL(file);
   };
 
-  // FIX #2: Correct typeArguments and functionArguments for set_collection_description
+  // Profile editing — on-chain collection description update
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!account || !signAndSubmitTransaction || !profile) return;
@@ -234,21 +183,23 @@ export default function UserProfilePage() {
         return;
       }
       
-      // FIX #2: Use correct type argument and collection object address
       const payload = {
         data: {
           function: "0x4::aptos_token::set_collection_description",
           typeArguments: ["0x4::aptos_token::AptosCollection"],
           functionArguments: [
-            profile.collectionId, // collection object address (not name string)
-            descriptionString // new description
+            profile.collectionId,
+            descriptionString
           ]
         }
       };
 
       await signAndSubmitTransaction(payload as any);
       
-      setProfile({ ...profile, ...profileData });
+      const updatedProfile = { ...profile, ...profileData };
+      setProfile(updatedProfile);
+      // Persist the updated profile to the local store
+      putProfile(updatedProfile);
       setIsEditing(false);
     } catch (err: any) {
       console.error(err);

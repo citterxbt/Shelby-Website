@@ -1,11 +1,11 @@
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useMemo } from "react";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Select } from "@/src/components/ui/select";
 import { useUploadBlobs, useAccountBlobs } from "@shelby-protocol/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { UploadCloud, CheckCircle2, Loader2, AlertCircle, FileText, Wallet, Users, Download, Image as ImageIcon, Settings, X, Plus, Zap, ExternalLink } from "lucide-react";
+import { UploadCloud, CheckCircle2, Loader2, AlertCircle, FileText, Wallet, Users, Download, Image as ImageIcon, X, Zap, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link } from "react-router-dom";
 import { useAuth, normalizeAddress } from "../contexts/AuthContext";
@@ -208,7 +208,6 @@ export default function AppPage() {
       // Build blob entries for all files
       // Note: Shelby protocol requires blobs >= 1024 bytes; pad if needed
       const blobEntries: { blobName: string; blobData: Uint8Array }[] = [];
-      const newFileRecords: FileData[] = [];
       const explorerLinks: string[] = [];
       const fileNames: string[] = [];
       const walletAddress = account.address.toString();
@@ -225,22 +224,9 @@ export default function AppPage() {
         }
         
         const blobName = file.name;
-        const url = `${SHELBY_API_BASE}/${walletAddress}/${encodeURIComponent(blobName)}`;
         const explorerLink = buildExplorerLink(walletAddress, blobName);
         explorerLinks.push(explorerLink);
         fileNames.push(blobName);
-
-        const expirationDate = retention === "-1" ? -1 : Date.now() + parseInt(retention) * 86400000;
-
-        newFileRecords.push({
-          id: `${walletAddress}_${Date.now()}_${blobName}`,
-          uploaderId: walletAddress,
-          blobName,
-          url,
-          size: file.size,
-          uploadDate: Date.now(),
-          expirationDate
-        });
 
         blobEntries.push({ blobName, blobData: fileData });
       }
@@ -248,45 +234,10 @@ export default function AppPage() {
       setResultUrls(explorerLinks);
       setUploadedFileNames(fileNames);
 
-      // Fetch existing files.json and merge
-      let existingFiles: FileData[] = [];
-      try {
-        const existingRes = await fetch(`${SHELBY_API_BASE}/${walletAddress}/files.json`);
-        if (existingRes.ok) {
-          // Read as text and strip any null bytes from previous padded uploads
-          const rawText = await existingRes.text();
-          const cleanText = rawText.replace(/\0+$/g, '').trim();
-          if (cleanText) {
-            const existingData = JSON.parse(cleanText);
-            if (Array.isArray(existingData)) {
-              existingFiles = existingData;
-            }
-          }
-        }
-      } catch {
-        // No existing files.json or corrupted, starting fresh
-      }
-
-      // Merge: add new files, avoid duplicates by blobName
-      const newBlobNames = new Set(newFileRecords.map(f => f.blobName));
-      const filteredExisting = existingFiles.filter(f => !newBlobNames.has(f.blobName));
-      const updatedFiles = [...newFileRecords, ...filteredExisting];
-      const filesJsonRaw = new TextEncoder().encode(JSON.stringify(updatedFiles));
-
-      // CRITICAL: Pad files.json to 1024 bytes minimum — Shelby protocol
-      // requires ALL blobs >= 1024 bytes. When a user has only 1-2 files,
-      // the JSON is ~250-500 bytes. Without padding, Shelby rejects the
-      // multipart upload with 400 Bad Request, causing the SDK to throw
-      // even though the on-chain transaction already succeeded.
-      let filesBlobData: Uint8Array;
-      if (filesJsonRaw.length < 1024) {
-        filesBlobData = new Uint8Array(1024);
-        filesBlobData.set(filesJsonRaw);
-      } else {
-        filesBlobData = filesJsonRaw;
-      }
-
-      blobEntries.push({ blobName: 'files.json', blobData: filesBlobData });
+      // files.json manifest removed — file listing is driven entirely
+      // by the Shelby SDK's useAccountBlobs hook which queries the
+      // indexer directly. This eliminates wasted token burns and
+      // multipart padding errors.
 
       setStep("approving");
       
