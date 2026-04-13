@@ -1,0 +1,5 @@
+{
+  "name": "Circle Storage",
+  "description": "Decentralized storage app using Shelby Protocol and Aptos.",
+  "requestFramePermissions": []
+}
