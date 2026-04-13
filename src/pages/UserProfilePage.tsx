@@ -11,6 +11,7 @@ import {
   getProfile,
   putProfile,
   revalidateFromIndexer,
+  verifyProfileOnChain,
 } from "../lib/profileStore";
 
 const SHELBY_API_BASE = "https://api.testnet.shelby.xyz/shelby/v1/blobs";
@@ -77,42 +78,66 @@ export default function UserProfilePage() {
   const profilePicInputRef = useRef<HTMLInputElement>(null);
   const uploadProfilePic = useUploadBlobs({});
 
-  // ——— Local-first profile fetch ———
-  // Instant read from ProfileStore, then background revalidation from indexer.
+  // ——— Multi-layer profile fetch ———
+  // Layer 1: localStorage (instant)
+  // Layer 2: Indexer GraphQL (background)
+  // Layer 3: Fullnode REST API (authoritative fallback)
   useEffect(() => {
     if (!userId) return;
     let cancelled = false;
 
-    // INSTANT: Read from local store (0ms)
+    const applyProfile = (p: UserProfile) => {
+      setProfile(p);
+      setEditUsername(p.username);
+      setEditFullName(p.fullName);
+      setEditProfilePicPreview(p.profilePictureUrl);
+    };
+
+    // LAYER 1: Read from local store (0ms)
     const cached = getProfile(userId);
     if (cached) {
-      setProfile(cached);
-      setEditUsername(cached.username);
-      setEditFullName(cached.fullName);
-      setEditProfilePicPreview(cached.profilePictureUrl);
+      applyProfile(cached);
       setLoading(false);
     }
 
-    // BACKGROUND: Revalidate from indexer (non-blocking)
-    revalidateFromIndexer(userId)
-      .then(result => {
+    // LAYER 2 + 3: Indexer → Fullnode chain
+    (async () => {
+      // Try the indexer first
+      try {
+        const indexerResult = await revalidateFromIndexer(userId);
         if (cancelled) return;
-        if (result) {
-          setProfile(result);
-          setEditUsername(result.username);
-          setEditFullName(result.fullName);
-          setEditProfilePicPreview(result.profilePictureUrl);
-        } else if (!cached) {
-          // No local data AND no indexer result → truly not found
-          setProfile(null);
+        if (indexerResult) {
+          applyProfile(indexerResult);
+          setLoading(false);
+          return;
         }
-        setLoading(false);
-      })
-      .catch(() => {
+      } catch {
+        // Indexer failed — fall through to fullnode
+      }
+
+      if (cancelled) return;
+
+      // LAYER 3: Direct fullnode verification (zero indexer dependency)
+      try {
+        const chainResult = await verifyProfileOnChain(userId);
         if (cancelled) return;
-        if (!cached) setProfile(null);
-        setLoading(false);
-      });
+        if (chainResult) {
+          applyProfile(chainResult);
+          setLoading(false);
+          return;
+        }
+      } catch {
+        // Fullnode also failed — fall through
+      }
+
+      if (cancelled) return;
+
+      // All layers exhausted — keep cached profile if we have one
+      if (!cached) {
+        setProfile(null);
+      }
+      setLoading(false);
+    })();
 
     return () => { cancelled = true; };
   }, [userId]);
@@ -213,19 +238,65 @@ export default function UserProfilePage() {
     return <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center"><Loader2 className="w-8 h-8 text-orange-500 animate-spin" /></div>;
   }
 
+  // ——— No CircleProfile found: show placeholder with wallet address ———
   if (!profile) {
     return (
-      <div className="min-h-screen bg-[#0a0a0a] text-white flex flex-col items-center justify-center p-6 text-center">
-        <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
-        <h2 className="text-2xl font-light mb-4 tracking-tight">PROFILE NOT FOUND</h2>
-        <p className="text-gray-400 text-sm mb-8 max-w-md">
-          We could not find a decentralized profile associated with the address <span className="font-mono text-xs text-orange-500 break-all">{userId}</span> on the Shelby testnet.
-        </p>
-        <Link to="/directory">
-          <Button variant="outline" className="border-white/10 text-white hover:bg-white/10 rounded-none tracking-widest text-xs">
-            RETURN TO LOOKUP
-          </Button>
-        </Link>
+      <div className="min-h-screen bg-[#0a0a0a] text-white font-sans p-6 md:p-12">
+        <div className="max-w-3xl mx-auto">
+          <header className="flex items-center justify-between mb-16 border-b border-white/10 pb-6">
+            <div className="flex items-center gap-6">
+              <Link to="/directory" className="text-gray-500 hover:text-white transition-colors">
+                <ArrowLeft className="w-6 h-6" />
+              </Link>
+              <div className="text-xs font-bold tracking-widest text-gray-400">USER PROFILE</div>
+            </div>
+          </header>
+
+          <div className="bg-[#141414] border border-white/10 p-8 md:p-12 flex flex-col md:flex-row items-center md:items-start gap-8 mb-8">
+            <div className="w-32 h-32 shrink-0 rounded-full overflow-hidden border border-white/10 bg-black flex items-center justify-center">
+              <img
+                src={`https://api.dicebear.com/7.x/shapes/svg?seed=${userId}`}
+                alt="Wallet avatar"
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <div className="text-center md:text-left flex-1 min-w-0">
+              <h1 className="text-3xl md:text-4xl font-light tracking-tight text-white mb-2 truncate">
+                {userId ? `${userId.slice(0, 8)}...${userId.slice(-6)}` : "Unknown"}
+              </h1>
+              <p className="text-sm text-gray-500 tracking-widest uppercase mb-6">NO CIRCLEPROFILE REGISTERED</p>
+
+              <div className="grid grid-cols-1 gap-6 pt-6 border-t border-white/5">
+                <div className="min-w-0">
+                  <div className="text-xs tracking-widest text-gray-500 mb-1">WALLET ADDRESS</div>
+                  <div className="text-sm font-mono text-gray-300 break-all">
+                    {userId}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-black border border-dashed border-white/10 p-8 text-center">
+            <ShieldAlert className="w-8 h-8 text-gray-600 mx-auto mb-4" />
+            <h3 className="text-xs font-bold tracking-widest text-gray-400 mb-2">NO PUBLIC DATA</h3>
+            <p className="text-xs text-gray-500 leading-relaxed max-w-md mx-auto">
+              This wallet address has not registered a Circle Storage profile. If this is your wallet, go to the app to create one.
+            </p>
+            <div className="flex justify-center gap-4 mt-6">
+              <Link to="/app">
+                <Button className="bg-orange-500 hover:bg-orange-600 text-black rounded-none text-xs font-bold tracking-widest px-6 h-10">
+                  CREATE PROFILE
+                </Button>
+              </Link>
+              <Link to="/directory">
+                <Button variant="outline" className="border-white/10 text-gray-400 hover:text-white hover:bg-white/10 bg-transparent rounded-none text-xs tracking-widest px-6 h-10">
+                  BACK TO LOOKUP
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
