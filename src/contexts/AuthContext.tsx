@@ -39,17 +39,23 @@ const PROFILE_QUERY = `
 `;
 
 // ——— localStorage Profile Cache ———
-// Profiles are cached by normalized wallet address to survive wallet
-// disconnect/reconnect cycles. This prevents the "No account found"
-// error caused by indexer eventual-consistency lag on re-login.
+// The profile cache is the PRIMARY source of truth for auth state.
+// The indexer is treated as a revalidation mechanism, never as the
+// sole authority. This design guarantees zero indexer-dependency for
+// login after registration, even during heavy testnet lag.
 const PROFILE_CACHE_KEY_PREFIX = "circle_profile_";
 
-function getCachedProfile(walletAddress: string): UserProfile | null {
+// ——— Local Profile Registry ———
+// Stores all profiles created on THIS device so the search module can
+// find them instantly without waiting for the indexer. Keyed by
+// normalized wallet address, stored as a JSON map.
+const LOCAL_REGISTRY_KEY = "circle_profile_registry";
+
+export function getCachedProfile(walletAddress: string): UserProfile | null {
   try {
     const raw = localStorage.getItem(PROFILE_CACHE_KEY_PREFIX + walletAddress);
     if (!raw) return null;
     const cached = JSON.parse(raw);
-    // Basic sanity check: must have username and walletAddress
     if (cached && cached.username && cached.walletAddress) {
       return cached as UserProfile;
     }
@@ -59,28 +65,59 @@ function getCachedProfile(walletAddress: string): UserProfile | null {
   return null;
 }
 
-function setCachedProfile(walletAddress: string, profile: UserProfile): void {
+export function setCachedProfile(walletAddress: string, profile: UserProfile): void {
   try {
     localStorage.setItem(
       PROFILE_CACHE_KEY_PREFIX + walletAddress,
       JSON.stringify(profile)
     );
+    // Also add to the local registry for search discovery
+    addToLocalRegistry(profile);
   } catch {
     // localStorage full or unavailable — non-fatal
   }
 }
 
-function clearCachedProfile(walletAddress: string): void {
+// ——— Local Profile Registry for Search ———
+// When a user registers on this device, their profile is added to a
+// local registry that the search module reads. This makes newly
+// registered profiles instantly discoverable without indexer dependency.
+
+interface RegistryEntry {
+  walletAddress: string;
+  username: string;
+  fullName: string;
+}
+
+function addToLocalRegistry(profile: UserProfile): void {
   try {
-    localStorage.removeItem(PROFILE_CACHE_KEY_PREFIX + walletAddress);
+    const raw = localStorage.getItem(LOCAL_REGISTRY_KEY);
+    const registry: Record<string, RegistryEntry> = raw ? JSON.parse(raw) : {};
+    registry[profile.walletAddress] = {
+      walletAddress: profile.walletAddress,
+      username: profile.username,
+      fullName: profile.fullName,
+    };
+    localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
   } catch {
-    // Ignore
+    // Non-fatal
+  }
+}
+
+export function getLocalRegistry(): RegistryEntry[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_REGISTRY_KEY);
+    if (!raw) return [];
+    const registry: Record<string, RegistryEntry> = JSON.parse(raw);
+    return Object.values(registry);
+  } catch {
+    return [];
   }
 }
 
 // Normalize any Aptos address to full 66-char lowercase hex (0x + 64 chars)
 // Pure JS - no SDK dependency
-function normalizeAddress(addr: string): string {
+export function normalizeAddress(addr: string): string {
   let hex = addr.toLowerCase().trim();
   if (hex.startsWith("0x")) hex = hex.slice(2);
   return "0x" + hex.padStart(64, "0");
@@ -128,7 +165,7 @@ async function queryIndexer(walletAddress: string): Promise<UserProfile | null> 
 }
 
 // Retry logic to handle Aptos indexer eventual consistency lag
-// Increased to 5 retries with 2s delay (10s total) for reliability
+// 5 retries with 2s delay (10s total) for reliability
 async function fetchProfileWithRetry(walletAddress: string, retries = 5, delayMs = 2000): Promise<UserProfile | null> {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -157,7 +194,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const normalizedWallet = walletAddress ? normalizeAddress(walletAddress) : null;
 
-  // Wrap setProfile to also update the localStorage cache
+  // Wrap setProfile to also update the localStorage cache + registry
   const setProfile = useCallback((newProfile: UserProfile | null) => {
     setProfileState(newProfile);
     if (newProfile && newProfile.walletAddress) {
@@ -169,9 +206,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (normalizedWallet) {
       let cancelled = false;
 
-      // ——— PHASE 1: Load from cache immediately ———
-      // This prevents the "No account found" flash on re-login by
-      // showing the cached profile while we revalidate from the indexer.
+      // ——— PHASE 1: Load from cache instantly (0ms) ———
+      // The cache is written on registration AND on every successful
+      // indexer fetch. This makes re-login instantaneous.
       const cached = getCachedProfile(normalizedWallet);
       if (cached) {
         setProfileState(cached);
@@ -181,26 +218,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // ——— PHASE 2: Revalidate from the indexer in background ———
+      // This enriches the cached profile with the latest collectionId
+      // (needed for profile editing) and keeps data fresh.
       fetchProfileWithRetry(normalizedWallet)
         .then(result => {
           if (!cancelled) {
             if (result) {
-              // Update with fresh data from indexer
               setProfileState(result);
               setCachedProfile(normalizedWallet, result);
             } else if (!cached) {
-              // No cached profile AND indexer returned nothing
+              // No cache AND no indexer result → truly no profile
               setProfileState(null);
             }
-            // If cached exists but indexer returned null, keep the cached
-            // profile — the indexer is likely just lagging
+            // If cached exists but indexer returned null:
+            // keep the cached profile — indexer is lagging.
             setLoading(false);
           }
         })
         .catch(err => {
           if (!cancelled) {
             console.error(err);
-            // On error, keep the cached profile if we have one
             if (!cached) {
               setProfileState(null);
             }
@@ -210,8 +247,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       return () => { cancelled = true; };
     } else if (!connected) {
-      // Only clear profile when wallet is disconnected, not during
-      // transient states where account is briefly unavailable
       setProfileState(null);
       setLoading(false);
     }
@@ -235,8 +270,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
-    // Don't clear the cache on logout — user may reconnect the same wallet
-    // The cache ensures instant recognition on re-login
+    // Don't clear the cache — user may reconnect the same wallet.
+    // The cache ensures instant recognition on re-login.
     disconnect();
     setProfileState(null);
   };

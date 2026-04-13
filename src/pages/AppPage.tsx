@@ -8,7 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { UploadCloud, CheckCircle2, Loader2, AlertCircle, FileText, Wallet, Users, Download, Image as ImageIcon, Settings, X, Plus, Zap, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link } from "react-router-dom";
-import { useAuth } from "../contexts/AuthContext";
+import { useAuth, normalizeAddress } from "../contexts/AuthContext";
 
 const SHELBY_API_BASE = "https://api.testnet.shelby.xyz/shelby/v1/blobs";
 const SHELBY_EXPLORER_BASE = "https://explorer.shelby.xyz/testnet/account";
@@ -483,11 +483,26 @@ export default function AppPage() {
 
       await signAndSubmitTransaction(payload as any);
       
-      // Wait for indexer to catch up, then refresh with retry
-      setTimeout(() => {
-        refreshProfile();
-        setIsAuthenticating(false);
-      }, 3000);
+      // ——— IMMEDIATE AUTH: Zero indexer dependency ———
+      // The on-chain transaction succeeded. We already have ALL the profile
+      // data from the form — don't wait for the indexer to "discover" it.
+      // Set the profile immediately so the user is authenticated instantly.
+      const walletAddr = normalizeAddress(account.address.toString());
+      const immediateProfile = {
+        walletAddress: walletAddr,
+        username: regUsername,
+        fullName: regFullName,
+        profilePictureUrl: profilePicUrl,
+        createdAt: profileData.createdAt,
+        collectionId: "", // Will be populated by background indexer revalidation
+      };
+      
+      setProfile(immediateProfile); // Also writes to localStorage + local registry
+      setIsAuthenticating(false);
+      
+      // Background: revalidate to get the collectionId (needed for profile editing)
+      // This runs silently — the user is already authenticated and using the app.
+      refreshProfile();
       
     } catch (err: any) {
       console.error(err);

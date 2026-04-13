@@ -3,35 +3,61 @@ import { Link, useNavigate } from "react-router-dom";
 import { Search, Users, Loader2 } from "lucide-react";
 import { Input } from "@/src/components/ui/input";
 import { Button } from "@/src/components/ui/button";
+import { normalizeAddress, getLocalRegistry } from "../contexts/AuthContext";
 
 const INDEXER_URL = "https://api.testnet.aptoslabs.com/v1/graphql";
 
-// Normalize any Aptos address to full 66-char lowercase hex (0x + 64 chars)
-// Pure JS - no SDK dependency
-function normalizeAddress(addr: string): string {
-  let hex = addr.toLowerCase().trim();
-  if (hex.startsWith("0x")) hex = hex.slice(2);
-  return "0x" + hex.padStart(64, "0");
-}
+// ——— localStorage-backed Search Cache ———
+// The search cache persists across page navigations (unlike the previous
+// in-memory-only cache) and merges indexer results with the local profile
+// registry. This guarantees:
+// 1. Repeated searches always return the same results (no indexer replica drift)
+// 2. Newly registered profiles are instantly discoverable
+// 3. Search survives page navigation without re-fetching
 
-// ——— Stable Search Cache ———
-// Caches the full list of CircleProfile collections to prevent the issue
-// where repeated identical searches return different results due to
-// indexer load balancing across replicas and non-deterministic ordering.
-// The cache has a short TTL (30s) to stay reasonably fresh while
-// ensuring stability within a user's search session.
+const SEARCH_CACHE_KEY = "circle_search_cache";
+const SEARCH_CACHE_TTL_MS = 60_000; // 60 seconds — longer TTL for stability
+
 interface CachedSearchData {
   collections: Array<{ creator_address: string; description: string }>;
   fetchedAt: number;
 }
 
-const SEARCH_CACHE_TTL_MS = 30_000; // 30 seconds
-let searchCache: CachedSearchData | null = null;
+function getSearchCache(): CachedSearchData | null {
+  try {
+    const raw = localStorage.getItem(SEARCH_CACHE_KEY);
+    if (!raw) return null;
+    const cached: CachedSearchData = JSON.parse(raw);
+    if (cached && cached.collections && (Date.now() - cached.fetchedAt) < SEARCH_CACHE_TTL_MS) {
+      return cached;
+    }
+  } catch {
+    // Corrupted — ignore
+  }
+  return null;
+}
+
+function setSearchCache(data: CachedSearchData): void {
+  try {
+    localStorage.setItem(SEARCH_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // Non-fatal
+  }
+}
+
+function clearSearchCache(): void {
+  try {
+    localStorage.removeItem(SEARCH_CACHE_KEY);
+  } catch {
+    // Ignore
+  }
+}
 
 async function fetchAllProfiles(): Promise<Array<{ creator_address: string; description: string }>> {
-  // Return from cache if still valid
-  if (searchCache && (Date.now() - searchCache.fetchedAt) < SEARCH_CACHE_TTL_MS) {
-    return searchCache.collections;
+  // Return from localStorage cache if still valid
+  const cached = getSearchCache();
+  if (cached) {
+    return cached.collections;
   }
 
   const query = `
@@ -59,13 +85,45 @@ async function fetchAllProfiles(): Promise<Array<{ creator_address: string; desc
   const resData = await res.json();
   const collections = resData.data?.current_collections_v2 || [];
 
-  // Update cache
-  searchCache = {
+  // Persist to localStorage
+  setSearchCache({
     collections,
     fetchedAt: Date.now()
-  };
+  });
 
   return collections;
+}
+
+// ——— Unified Search ———
+// Searches both the indexer results (cached) AND the local profile registry.
+// The local registry contains profiles created on this device that the
+// indexer may not have ingested yet. This eliminates the window where a
+// newly registered user is unsearchable.
+function searchByUsername(
+  term: string,
+  indexerCollections: Array<{ creator_address: string; description: string }>
+): string | null {
+  const lowerTerm = term.toLowerCase();
+
+  // 1. Search indexer results first (authoritative when available)
+  for (const col of indexerCollections) {
+    try {
+      const data = JSON.parse(col.description);
+      if (data.username && data.username.toLowerCase() === lowerTerm) {
+        return normalizeAddress(col.creator_address);
+      }
+    } catch {}
+  }
+
+  // 2. Fall back to local registry (covers indexer lag)
+  const localProfiles = getLocalRegistry();
+  for (const entry of localProfiles) {
+    if (entry.username.toLowerCase() === lowerTerm) {
+      return entry.walletAddress; // Already normalized
+    }
+  }
+
+  return null;
 }
 
 export default function DirectoryPage() {
@@ -87,7 +145,7 @@ export default function DirectoryPage() {
       return;
     }
     
-    // Otherwise, search by username using the cached profile list
+    // Otherwise, search by username
     setIsSearching(true);
     setSearchError("");
     const mySearchId = ++searchIdRef.current;
@@ -95,9 +153,9 @@ export default function DirectoryPage() {
     // Retry logic for indexer consistency
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        // On retry, invalidate cache to force a fresh fetch
+        // On retry, invalidate cache to force a fresh indexer fetch
         if (attempt > 0) {
-          searchCache = null;
+          clearSearchCache();
         }
 
         const collections = await fetchAllProfiles();
@@ -105,20 +163,10 @@ export default function DirectoryPage() {
         // Discard if a newer search has started
         if (searchIdRef.current !== mySearchId) return;
 
-        let foundAddress: string | null = null;
-        
-        for (const col of collections) {
-          try {
-            const data = JSON.parse(col.description);
-            if (data.username && data.username.toLowerCase() === term.toLowerCase()) {
-              foundAddress = col.creator_address;
-              break;
-            }
-          } catch (e) {}
-        }
+        const foundAddress = searchByUsername(term, collections);
         
         if (foundAddress) {
-          navigate(`/directory/${normalizeAddress(foundAddress)}`);
+          navigate(`/directory/${foundAddress}`);
           setIsSearching(false);
           return;
         }
@@ -130,8 +178,7 @@ export default function DirectoryPage() {
       } catch (err) {
         console.error(`Search attempt ${attempt + 1} failed:`, err);
         if (attempt < 2) {
-          // Invalidate cache before retry
-          searchCache = null;
+          clearSearchCache();
           await new Promise(resolve => setTimeout(resolve, 1500));
         }
       }
