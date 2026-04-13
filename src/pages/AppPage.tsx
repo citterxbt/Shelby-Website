@@ -190,14 +190,22 @@ export default function AppPage() {
     try {
       setStep("initiating");
       
-      // Build blob entries for all files — NO size restrictions
+      // Build blob entries for all files
+      // Note: Shelby protocol requires blobs >= 1024 bytes; pad if needed
       const blobEntries: { blobName: string; blobData: Uint8Array }[] = [];
       const newFileRecords: FileData[] = [];
       const urls: string[] = [];
 
       for (const file of files) {
         const arrayBuffer = await file.arrayBuffer();
-        const fileData = new Uint8Array(arrayBuffer);
+        let fileData = new Uint8Array(arrayBuffer);
+        
+        // Shelby protocol minimum blob size: pad to 1024 bytes if needed
+        if (fileData.length < 1024) {
+          const paddedData = new Uint8Array(1024);
+          paddedData.set(fileData);
+          fileData = paddedData;
+        }
         
         const blobName = file.name;
         const encodedBlobName = encodeURIComponent(blobName);
@@ -239,7 +247,13 @@ export default function AppPage() {
       const newBlobNames = new Set(newFileRecords.map(f => f.blobName));
       const filteredExisting = existingFiles.filter(f => !newBlobNames.has(f.blobName));
       const updatedFiles = [...newFileRecords, ...filteredExisting];
-      const filesBlobData = new TextEncoder().encode(JSON.stringify(updatedFiles));
+      let filesBlobData = new TextEncoder().encode(JSON.stringify(updatedFiles));
+      // Pad files.json if under protocol minimum
+      if (filesBlobData.length < 1024) {
+        const paddedMeta = new Uint8Array(1024);
+        paddedMeta.set(filesBlobData);
+        filesBlobData = paddedMeta;
+      }
 
       // Add files.json to the batch
       blobEntries.push({ blobName: 'files.json', blobData: filesBlobData });
