@@ -234,28 +234,27 @@ export default function AppPage() {
       try {
         const existingRes = await fetch(`${SHELBY_API_BASE}/${account.address.toString()}/files.json`);
         if (existingRes.ok) {
-          const existingData = await existingRes.json();
-          if (Array.isArray(existingData)) {
-            existingFiles = existingData;
+          // Read as text and strip any null bytes from previous padded uploads
+          const rawText = await existingRes.text();
+          const cleanText = rawText.replace(/\0+$/g, '').trim();
+          if (cleanText) {
+            const existingData = JSON.parse(cleanText);
+            if (Array.isArray(existingData)) {
+              existingFiles = existingData;
+            }
           }
         }
       } catch {
-        // No existing files.json, starting fresh
+        // No existing files.json or corrupted, starting fresh
       }
 
       // Merge: add new files, avoid duplicates by blobName
       const newBlobNames = new Set(newFileRecords.map(f => f.blobName));
       const filteredExisting = existingFiles.filter(f => !newBlobNames.has(f.blobName));
       const updatedFiles = [...newFileRecords, ...filteredExisting];
-      let filesBlobData = new TextEncoder().encode(JSON.stringify(updatedFiles));
-      // Pad files.json if under protocol minimum
-      if (filesBlobData.length < 1024) {
-        const paddedMeta = new Uint8Array(1024);
-        paddedMeta.set(filesBlobData);
-        filesBlobData = paddedMeta;
-      }
+      const filesBlobData = new TextEncoder().encode(JSON.stringify(updatedFiles));
 
-      // Add files.json to the batch
+      // Add files.json to the batch (no padding — original code never padded metadata)
       blobEntries.push({ blobName: 'files.json', blobData: filesBlobData });
 
       setStep("approving");
