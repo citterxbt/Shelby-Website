@@ -20,7 +20,7 @@ body {
 }
 
 .spotlight-card:hover {
-  border-color: rgba(249, 115, 22, 0.3);
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
 .spotlight-card::before {
@@ -28,8 +28,8 @@ body {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
   background: radial-gradient(
-    600px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
-    rgba(249, 115, 22, 0.08),
+    800px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    rgba(255, 255, 255, 0.06),
     transparent 40%
   );
   z-index: 0;
@@ -45,4 +45,11 @@ body {
 .content-relative {
   position: relative;
   z-index: 1;
+}
+
+.text-metallic {
+  background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 50%, #ffffff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
