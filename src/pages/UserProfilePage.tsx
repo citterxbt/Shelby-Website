@@ -201,7 +201,7 @@ export default function UserProfilePage() {
   };
 
   if (loading) {
-    return <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center"><Loader2 className="w-8 h-8 text-orange-500 animate-spin" /></div>;
+    return <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center"><Loader2 className="w-8 h-8 text-white animate-spin" /></div>;
   }
 
   // ——— No CircleProfile found: show placeholder with wallet address ———
@@ -251,7 +251,7 @@ export default function UserProfilePage() {
             </p>
             <div className="flex justify-center gap-4 mt-6">
               <Link to="/app">
-                <Button className="bg-orange-500 hover:bg-orange-600 text-black rounded-none text-xs font-bold tracking-widest px-6 h-10">
+                <Button className="bg-white hover:bg-white text-black rounded-none text-xs font-bold tracking-widest px-6 h-10">
                   CREATE PROFILE
                 </Button>
               </Link>
@@ -303,7 +303,7 @@ export default function UserProfilePage() {
                 <label className="text-xs tracking-widest text-gray-400">PROFILE PICTURE</label>
                 <div className="flex items-center gap-4">
                   <div 
-                    className={`w-20 h-20 shrink-0 rounded-full border border-white/10 flex items-center justify-center overflow-hidden bg-black ${isSaving ? 'opacity-50' : 'cursor-pointer hover:border-orange-500/50 transition-colors'}`}
+                    className={`w-20 h-20 shrink-0 rounded-full border border-white/10 flex items-center justify-center overflow-hidden bg-black ${isSaving ? 'opacity-50' : 'cursor-pointer hover:border-white/50 transition-colors'}`}
                     onClick={() => !isSaving && profilePicInputRef.current?.click()}
                   >
                     {editProfilePicPreview ? (
@@ -337,7 +337,7 @@ export default function UserProfilePage() {
                 <Input 
                   value={editUsername} 
                   onChange={(e) => setEditUsername(e.target.value)} 
-                  className="bg-black border-white/10 rounded-none focus-visible:ring-orange-500 h-12" 
+                  className="bg-black border-white/10 rounded-none focus-visible:ring-white h-12" 
                   required 
                   disabled={isSaving}
                 />
@@ -347,7 +347,7 @@ export default function UserProfilePage() {
                 <Input 
                   value={editFullName} 
                   onChange={(e) => setEditFullName(e.target.value)} 
-                  className="bg-black border-white/10 rounded-none focus-visible:ring-orange-500 h-12" 
+                  className="bg-black border-white/10 rounded-none focus-visible:ring-white h-12" 
                   required 
                   disabled={isSaving}
                 />
@@ -356,7 +356,7 @@ export default function UserProfilePage() {
                 <Button 
                   type="submit" 
                   disabled={isSaving} 
-                  className="flex-1 bg-orange-500 hover:bg-orange-600 text-black text-xs font-bold tracking-widest rounded-none h-12"
+                  className="flex-1 bg-white hover:bg-white text-black text-xs font-bold tracking-widest rounded-none h-12"
                 >
                   {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : "SAVE CHANGES"}
                 </Button>
@@ -387,7 +387,7 @@ export default function UserProfilePage() {
             </div>
             <div className="text-center md:text-left flex-1 min-w-0">
               <h1 className="text-3xl md:text-4xl font-light tracking-tight text-white mb-2 truncate">{profile.fullName}</h1>
-              <p className="text-sm text-orange-500 tracking-widest uppercase mb-6 truncate">@{profile.username}</p>
+              <p className="text-sm text-white tracking-widest uppercase mb-6 truncate">@{profile.username}</p>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-6 border-t border-white/5">
                 <div className="min-w-0">
@@ -416,7 +416,7 @@ export default function UserProfilePage() {
 
             {loadingFiles ? (
               <div className="flex justify-center py-20">
-                <Loader2 className="w-6 h-6 text-orange-500 animate-spin" />
+                <Loader2 className="w-6 h-6 text-white animate-spin" />
               </div>
             ) : myFiles.length > 0 ? (
               <div className="space-y-4">
