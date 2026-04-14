@@ -463,7 +463,7 @@ export default function AppPage() {
   };
 
   if (authLoading) {
-    return <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center"><Loader2 className="w-8 h-8 text-orange-500 animate-spin" /></div>;
+    return <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center"><Loader2 className="w-8 h-8 text-white animate-spin" /></div>;
   }
 
   return (
@@ -513,7 +513,7 @@ export default function AppPage() {
                     <div className="space-y-4">
                       <Button 
                         onClick={() => { setAuthMode("login"); if (!connected) connect("Petra" as any); }} 
-                        className="w-full bg-orange-500 hover:bg-orange-600 text-black text-xs font-bold tracking-widest rounded-none h-12"
+                        className="w-full bg-white hover:bg-white text-black text-xs font-bold tracking-widest rounded-none h-12"
                       >
                         <Wallet className="w-4 h-4 mr-2" />
                         LOGIN WITH WALLET
@@ -521,7 +521,7 @@ export default function AppPage() {
                       <Button 
                         onClick={() => { setAuthMode("register"); if (!connected) connect("Petra" as any); }} 
                         variant="outline"
-                        className="w-full border-orange-500 text-orange-500 hover:bg-orange-500/10 bg-transparent text-xs font-bold tracking-widest rounded-none h-12"
+                        className="w-full border-white text-white hover:bg-white/10 bg-transparent text-xs font-bold tracking-widest rounded-none h-12"
                       >
                         REGISTER NEW ACCOUNT
                       </Button>
@@ -543,7 +543,7 @@ export default function AppPage() {
                     {!connected ? (
                       <Button 
                         onClick={() => connect("Petra" as any)} 
-                        className="w-full bg-orange-500 hover:bg-orange-600 text-black text-xs font-bold tracking-widest rounded-none h-12"
+                        className="w-full bg-white hover:bg-white text-black text-xs font-bold tracking-widest rounded-none h-12"
                       >
                         <Wallet className="w-4 h-4 mr-2" />
                         CONNECT WALLET
@@ -552,7 +552,7 @@ export default function AppPage() {
                       /* ——— Loading: verifying on-chain ——— */
                       <div className="text-center space-y-6">
                         <div className="flex flex-col items-center gap-4 py-4">
-                          <Loader2 className="w-6 h-6 text-orange-500 animate-spin" />
+                          <Loader2 className="w-6 h-6 text-white animate-spin" />
                           <div className="text-xs tracking-widest text-gray-300 font-medium uppercase">
                             VERIFYING ON-CHAIN...
                           </div>
@@ -600,7 +600,7 @@ export default function AppPage() {
                     {!connected ? (
                       <Button 
                         onClick={() => connect("Petra" as any)} 
-                        className="w-full bg-orange-500 hover:bg-orange-600 text-black text-xs font-bold tracking-widest rounded-none h-12"
+                        className="w-full bg-white hover:bg-white text-black text-xs font-bold tracking-widest rounded-none h-12"
                       >
                         <Wallet className="w-4 h-4 mr-2" />
                         CONNECT WALLET
@@ -629,7 +629,7 @@ export default function AppPage() {
                       <form onSubmit={handleRegister} className="space-y-6">
                         <div className="p-4 bg-black border border-white/10 flex items-center justify-between">
                           <div className="flex items-center gap-3 text-xs text-gray-300 tracking-widest">
-                            <CheckCircle2 className="w-4 h-4 text-orange-500" />
+                            <CheckCircle2 className="w-4 h-4 text-white" />
                             WALLET CONNECTED
                           </div>
                           <span className="text-xs font-mono text-gray-500">
@@ -642,7 +642,7 @@ export default function AppPage() {
                           <Input 
                             value={regUsername} 
                             onChange={(e) => setRegUsername(e.target.value)} 
-                            className="bg-black border-white/10 rounded-none focus-visible:ring-orange-500 h-12" 
+                            className="bg-black border-white/10 rounded-none focus-visible:ring-white h-12" 
                             required 
                             disabled={!connected || isAuthenticating}
                           />
@@ -652,7 +652,7 @@ export default function AppPage() {
                           <Input 
                             value={regFullName} 
                             onChange={(e) => setRegFullName(e.target.value)} 
-                            className="bg-black border-white/10 rounded-none focus-visible:ring-orange-500 h-12" 
+                            className="bg-black border-white/10 rounded-none focus-visible:ring-white h-12" 
                             required 
                             disabled={!connected || isAuthenticating}
                           />
@@ -661,7 +661,7 @@ export default function AppPage() {
                           <label className="text-xs tracking-widest text-gray-400">PROFILE PICTURE</label>
                           <div className="flex items-center gap-4">
                             <div 
-                              className={`w-16 h-16 shrink-0 rounded-full border border-white/10 flex items-center justify-center overflow-hidden bg-black ${!connected || isAuthenticating ? 'opacity-50' : 'cursor-pointer hover:border-orange-500/50 transition-colors'}`}
+                              className={`w-16 h-16 shrink-0 rounded-full border border-white/10 flex items-center justify-center overflow-hidden bg-black ${!connected || isAuthenticating ? 'opacity-50' : 'cursor-pointer hover:border-white/50 transition-colors'}`}
                               onClick={() => connected && !isAuthenticating && profilePicInputRef.current?.click()}
                             >
                               {regProfilePicPreview ? (
@@ -737,7 +737,7 @@ export default function AppPage() {
                       )}
                     </div>
                     <div 
-                      className={`border border-dashed p-8 text-center transition-all duration-300 ${files.length > 0 ? 'border-orange-500/50 bg-orange-500/5' : 'border-white/10 hover:border-orange-500/30 bg-black hover:bg-white/5 cursor-pointer'}`}
+                      className={`border border-dashed p-8 text-center transition-all duration-300 ${files.length > 0 ? 'border-white/50 bg-white/5' : 'border-white/10 hover:border-white/30 bg-black hover:bg-white/5 cursor-pointer'}`}
                       onClick={() => fileInputRef.current?.click()}
                       onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
                       onDrop={(e) => {
@@ -760,7 +760,7 @@ export default function AppPage() {
                       />
                       {files.length > 0 ? (
                         <div className="flex flex-col items-center gap-3">
-                          <UploadCloud className="w-8 h-8 text-orange-500" />
+                          <UploadCloud className="w-8 h-8 text-white" />
                           <span className="text-sm font-medium text-white">{files.length} file{files.length > 1 ? 's' : ''} selected</span>
                           <span className="text-xs text-gray-400">Total: {formatFileSize(totalSize)}</span>
                           <span className="text-xs text-gray-500">Click or drop to add more</span>
@@ -816,7 +816,7 @@ export default function AppPage() {
                     <Select 
                       value={retention} 
                       onChange={(e) => setRetention(e.target.value)}
-                      className="bg-black border-white/10 text-white focus:ring-orange-500/50 rounded-none h-12"
+                      className="bg-black border-white/10 text-white focus:ring-white/50 rounded-none h-12"
                       disabled={step !== "idle" && step !== "error"}
                     >
                       {RETENTION_OPTIONS.map(opt => (
@@ -832,7 +832,7 @@ export default function AppPage() {
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -10 }}
-                        className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border border-orange-500/20 p-6 space-y-4"
+                        className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border border-white/20 p-6 space-y-4"
                       >
                         <div className="flex items-center gap-2 mb-2">
                           <Zap className="w-4 h-4 text-orange-400" />
@@ -864,7 +864,7 @@ export default function AppPage() {
                             </span>
                           </div>
                           
-                          <div className="border-t border-orange-500/20 pt-3 mt-3">
+                          <div className="border-t border-white/20 pt-3 mt-3">
                             <div className="flex justify-between items-baseline">
                               <span className="text-xs tracking-widest text-gray-400">TOTAL</span>
                               <div className="text-right">
@@ -880,7 +880,7 @@ export default function AppPage() {
 
                   {/* ——— Upload Button ——— */}
                   <Button 
-                    className="w-full bg-orange-500 hover:bg-orange-600 text-black h-12 text-xs font-bold tracking-widest rounded-none transition-all"
+                    className="w-full bg-white hover:bg-white text-black h-12 text-xs font-bold tracking-widest rounded-none transition-all"
                     disabled={files.length === 0 || !connected || (step !== "idle" && step !== "error")}
                     onClick={handleUploadFlow}
                   >
@@ -919,10 +919,10 @@ export default function AppPage() {
                         <motion.div 
                           initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
-                          className="mt-8 p-6 bg-orange-500/10 border border-orange-500/30"
+                          className="mt-8 p-6 bg-white/10 border border-white/30"
                         >
                           <div className="flex items-start gap-4">
-                            <CheckCircle2 className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+                            <CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" />
                             <div className="w-full">
                               <h4 className="text-xs font-bold tracking-widest text-orange-400 mb-2">UPLOAD SUCCESSFUL</h4>
                               <p className="text-xs text-gray-400 mb-4 leading-relaxed">
@@ -931,7 +931,7 @@ export default function AppPage() {
 
                               {/* Transaction Hash Link */}
                               {txHash && (
-                                <div className="mb-4 p-3 bg-black border border-orange-500/20">
+                                <div className="mb-4 p-3 bg-black border border-white/20">
                                   <div className="flex items-center gap-2 mb-1">
                                     <span className="text-xs tracking-widest text-gray-500">TX HASH</span>
                                   </div>
@@ -969,7 +969,7 @@ export default function AppPage() {
                               <Button 
                                 variant="outline" 
                                 onClick={resetState}
-                                className="w-full border-orange-500/30 text-orange-400 hover:bg-orange-500/20 bg-transparent rounded-none text-xs tracking-widest h-10"
+                                className="w-full border-white/30 text-orange-400 hover:bg-white/20 bg-transparent rounded-none text-xs tracking-widest h-10"
                               >
                                 UPLOAD MORE FILES
                               </Button>
@@ -1038,7 +1038,7 @@ export default function AppPage() {
 
                   {loadingFiles ? (
                     <div className="flex justify-center py-20">
-                      <Loader2 className="w-6 h-6 text-orange-500 animate-spin" />
+                      <Loader2 className="w-6 h-6 text-white animate-spin" />
                     </div>
                   ) : myFiles.length > 0 ? (
                     <div className="space-y-4">
@@ -1117,7 +1117,7 @@ function StatusStep({ title, description, status }: { title: string, description
   return (
     <div className="relative flex gap-5">
       <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full border shrink-0 bg-[#141414] transition-colors duration-300
-        ${status === "complete" ? "border-orange-500 text-orange-500" : 
+        ${status === "complete" ? "border-white text-white" : 
           status === "active" ? "border-orange-400 text-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.5)]" : 
           status === "error" ? "border-red-500 text-red-500" :
           "border-white/10 text-gray-600"}`}
@@ -1129,7 +1129,7 @@ function StatusStep({ title, description, status }: { title: string, description
       </div>
       <div className="pt-1.5">
         <h4 className={`text-xs font-bold tracking-widest transition-colors duration-300
-          ${status === "complete" ? "text-orange-500" : 
+          ${status === "complete" ? "text-white" : 
             status === "active" ? "text-orange-400" : 
             status === "error" ? "text-red-500" :
             "text-gray-500"}`}
