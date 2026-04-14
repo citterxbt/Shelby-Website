@@ -73,13 +73,13 @@ export default function DirectoryPage() {
           <Link to="/" className="text-xl font-bold tracking-widest flex items-center gap-3 text-white">
             CIRCLE STORAGE
           </Link>
-          <Link to="/app" className="text-xs font-bold tracking-widest text-orange-500 hover:text-orange-400 transition-colors">
+          <Link to="/app" className="text-xs font-bold tracking-widest text-white hover:text-orange-400 transition-colors">
             RETURN TO APP
           </Link>
         </header>
 
         <div className="flex-1 flex flex-col items-center justify-center -mt-20">
-          <Users className="w-16 h-16 text-orange-500 mb-8" />
+          <Users className="w-16 h-16 text-white mb-8" />
           <h1 className="text-4xl md:text-5xl font-light tracking-tight mb-4 text-center">
             DECENTRALIZED LOOKUP
           </h1>
@@ -93,13 +93,13 @@ export default function DirectoryPage() {
                 value={searchAddress}
                 onChange={(e) => setSearchAddress(e.target.value)}
                 placeholder="Enter Username or Aptos Wallet Address (0x...)"
-                className="bg-[#141414] border-white/10 rounded-none focus-visible:ring-orange-500 h-14 font-mono text-sm flex-1"
+                className="bg-[#141414] border-white/10 rounded-none focus-visible:ring-white h-14 font-mono text-sm flex-1"
                 disabled={isSearching}
               />
               <Button 
                 type="submit"
                 disabled={!searchAddress.trim() || isSearching}
-                className="bg-orange-500 hover:bg-orange-600 text-black rounded-none text-xs font-bold tracking-widest px-8 h-14"
+                className="bg-white hover:bg-white text-black rounded-none text-xs font-bold tracking-widest px-8 h-14"
               >
                 {isSearching ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
               </Button>
